@@ -3,16 +3,27 @@
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
+from operator import itemgetter
 from pathlib import Path
 
 from sift.analysis.tokenize import tokenize
 from sift.index import build_index
 from sift.markdown import split_front_matter, strip_markdown
+from sift.scoring import tf_idf
+from sift.util import compose, timed
 
 CORPUS = Path("corpus/posts")
 USAGE = "usage: python -m sift search <word>... | python -m sift stats"
 
 
+# 文件文本 -> 去掉 front matter -> 去掉 Markdown 标记 -> 词项
+analyze_file = compose(
+    split_front_matter, itemgetter(1), strip_markdown, tokenize
+)
+
+
+@timed
 def load_index(root: Path) -> tuple[list[Path], dict[str, dict[int, int]]]:
     """Read, tokenize and index every Markdown file under root.
 
@@ -21,18 +32,21 @@ def load_index(root: Path) -> tuple[list[Path], dict[str, dict[int, int]]]:
     paths = sorted(root.glob("*.md"))
     docs: dict[int, list[str]] = {}
     for doc_id, path in enumerate(paths):
-        text = path.read_text(encoding="utf-8")
-        body = strip_markdown(split_front_matter(text)[1])
-        docs[doc_id] = tokenize(body)
+        docs[doc_id] = analyze_file(path.read_text(encoding="utf-8"))
     return paths, build_index(docs)
 
 
 def search_index(
-    index: dict[str, dict[int, int]], words: list[str]
-) -> list[tuple[int, int]]:
-    """Return (summed tf, doc_id) of documents holding every query token.
+    index: dict[str, dict[int, int]],
+    words: list[str],
+    n_docs: int,
+    scoring: Callable[[int, int, int], float] = tf_idf,
+) -> list[tuple[float, int]]:
+    """Return (score, doc_id) of documents holding every query token.
 
-    Sorted by summed tf descending, then doc_id.
+    A document scores the sum over query terms of
+    ``scoring(tf, df, n_docs)``. Sorted by score descending, then
+    doc_id.
     """
     terms = list(dict.fromkeys(token for w in words for token in tokenize(w)))
     if not terms:
@@ -41,20 +55,23 @@ def search_index(
     matching = set(postings[0])
     for posting in postings[1:]:
         matching &= posting.keys()
-    hits = [(sum(p[doc_id] for p in postings), doc_id) for doc_id in matching]
+    hits = [
+        (sum(scoring(p[doc_id], len(p), n_docs) for p in postings), doc_id)
+        for doc_id in matching
+    ]
     hits.sort(key=lambda hit: (-hit[0], hit[1]))
     return hits
 
 
 def run_search(words: list[str]) -> None:
-    """Print the top 10 files holding every word."""
+    """Print the top 10 files by TF-IDF holding every word."""
     start = time.perf_counter()
     paths, index = load_index(CORPUS)
     built = time.perf_counter()
-    hits = search_index(index, words)
+    hits = search_index(index, words, len(paths))
     end = time.perf_counter()
-    for count, doc_id in hits[:10]:
-        print(f"{count:>6}  {paths[doc_id]}")
+    for score, doc_id in hits[:10]:
+        print(f"{score:8.3f}  {paths[doc_id]}")
     print(
         f"{len(hits)} hits in {len(paths)} files: "
         f"index built in {(built - start) * 1000:.1f} ms, "
