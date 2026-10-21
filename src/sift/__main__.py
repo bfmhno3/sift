@@ -1,4 +1,4 @@
-"""Index search: python -m sift search <word>... | python -m sift stats."""
+"""Search: python -m sift search <word>... | python -m sift stats."""
 
 import sys
 import time

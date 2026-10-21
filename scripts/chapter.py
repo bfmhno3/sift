@@ -1,4 +1,4 @@
-"""Run every lab file of one chapter: python3 scripts/chapter.py ch01."""
+"""Run the lab files of one chapter: chapter.py chNN."""
 
 import os
 import subprocess
