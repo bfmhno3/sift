@@ -51,7 +51,9 @@ def run_one(path: Path, out_dir: Path, env: dict[str, str]) -> bool:
     ok = code != 0 if should_fail(path.stem) else code == 0
     if code == 124:
         ok = False
-    print(f"{'ok  ' if ok else 'FAIL'} {rel}" + ("" if ok else f" (exit {code})"))
+    print(
+        f"{'ok  ' if ok else 'FAIL'} {rel}" + ("" if ok else f" (exit {code})")
+    )
     return ok
 
 
