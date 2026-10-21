@@ -27,7 +27,11 @@ def main() -> None:
     print("deepcopy:", deep, deep[0] is outer[0])
     print("slice copy is shallow:", outer[:][0] is outer[0])
 
-    def append_to(item: int, bucket: list[int] = []) -> list[int]:  # noqa: B006
+    # BAD: 默认值只在 def 执行时创建一次
+    def append_to(
+        item: int,
+        bucket: list[int] = [],  # noqa: B006
+    ) -> list[int]:
         bucket.append(item)
         return bucket
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # 朴素搜索对比 grep：同一个词，同一批文件。
 set -euo pipefail
 
