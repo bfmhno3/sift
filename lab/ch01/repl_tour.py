@@ -5,7 +5,7 @@ import math
 
 def show(label: str, value: object) -> None:
     """Print a label, the value and its type."""
-    print(f"{label:<28}{value!r:<24}{type(value).__name__}")
+    print(f"{label:<28}{value!r:<62}{type(value).__name__}")
 
 
 def main() -> None:

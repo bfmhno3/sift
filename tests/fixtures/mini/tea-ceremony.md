@@ -1,5 +1,5 @@
 ---
-title: Brewing tea: a short guide
+title: "Brewing tea: a short guide"
 published: "2026-01-05 08:00:00 +08:00"
 tags:
   - tea

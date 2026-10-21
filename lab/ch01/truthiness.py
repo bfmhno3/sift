@@ -41,7 +41,7 @@ def main() -> None:
         Flag(True),
     ]
     for value in samples:
-        print(f"{type(value).__name__:<8}{value!r:<36.34}{bool(value)}")
+        print(f"{type(value).__name__:<10}{value!r:<36.34}{bool(value)}")
     print("[] == False:", [] == False)  # noqa: E712
     print("0 == False:", 0 == False)  # noqa: E712
     print("'' or 'default':", "" or "default")  # noqa: SIM222
