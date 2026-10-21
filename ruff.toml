@@ -1,0 +1,9 @@
+line-length = 79
+target-version = "py314"
+extend-exclude = ["lab/**/*_syntaxerror.py", "corpus"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[format]
+quote-style = "double"
