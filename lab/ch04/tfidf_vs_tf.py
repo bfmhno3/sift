@@ -13,8 +13,8 @@ def plain_tf(tf: int, df: int, n_docs: int) -> float:
 
 def main() -> None:
     """Compare the two rankings, then report idf cache statistics."""
-    paths, index = load_index(CORPUS)
-    n_docs = len(paths)
+    documents, index = load_index(CORPUS)
+    n_docs = len(documents)
     idf.cache_clear()
     for query in QUERIES:
         words = query.split()
@@ -23,10 +23,10 @@ def main() -> None:
         print(f"query: {query!r}: {len(by_idf)} hits")
         print("  plain tf")
         for score, doc_id in by_tf[:3]:
-            print(f"    {score:8.0f}  {paths[doc_id].name}")
+            print(f"    {score:8.0f}  {documents[doc_id].path.name}")
         print("  tf-idf")
         for score, doc_id in by_idf[:3]:
-            print(f"    {score:8.3f}  {paths[doc_id].name}")
+            print(f"    {score:8.3f}  {documents[doc_id].path.name}")
     info = idf.cache_info()
     calls = info.hits + info.misses
     print(info)

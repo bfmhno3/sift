@@ -8,7 +8,6 @@ from pathlib import Path
 
 from sift.analysis.tokenize import iter_tokens, tokenize
 from sift.corpus import iter_documents
-from sift.markdown import split_front_matter, strip_markdown
 
 ROOT = Path("corpus/posts")
 RUNS = 3
@@ -17,7 +16,7 @@ RUNS = 3
 def bodies() -> Iterator[str]:
     """Yield the stripped body of every post, one at a time."""
     for doc in iter_documents(ROOT):
-        yield strip_markdown(split_front_matter(doc.text)[1])
+        yield doc.body
 
 
 def count_with_list() -> int:

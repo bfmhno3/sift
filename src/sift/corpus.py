@@ -1,23 +1,19 @@
-"""Reading the corpus: a lazy stream of raw Markdown documents."""
+"""Reading the corpus: a lazy stream of parsed documents."""
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import NamedTuple
+
+from sift.document import Document
 
 
-class RawDoc(NamedTuple):
-    """A Markdown file as read from disk, before any parsing."""
+def iter_documents(root: Path) -> Iterator[Document]:
+    """Yield every ``*.md`` file under root as a Document.
 
-    path: Path
-    text: str
-
-
-def iter_documents(root: Path) -> Iterator[RawDoc]:
-    """Yield every ``*.md`` file under root, one file at a time.
-
-    Files come in sorted path order, so the position of a document in
-    the stream is a stable doc_id. Each file is read when the consumer
-    asks for it, never earlier.
+    Files come in sorted path order and the doc_id of a document is
+    its position in that order. Each file is read and parsed when the
+    consumer asks for it, never earlier. A malformed front matter
+    raises ValueError naming the file.
     """
-    for path in sorted(root.rglob("*.md")):
-        yield RawDoc(path, path.read_text(encoding="utf-8"))
+    for doc_id, path in enumerate(sorted(root.rglob("*.md"))):
+        text = path.read_text(encoding="utf-8")
+        yield Document.from_markdown(doc_id, path, text)
