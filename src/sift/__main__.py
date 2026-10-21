@@ -2,15 +2,20 @@
 
 import sys
 import time
+from collections import Counter
 from pathlib import Path
+
+from sift.analysis.tokenize import tokenize
+from sift.markdown import split_front_matter, strip_markdown
 
 CORPUS = Path("corpus/posts")
 
 
 def count_words(text: str, words: list[str]) -> int:
-    """Return the total case-insensitive occurrences of words in text."""
-    lowered = text.lower()
-    return sum(lowered.count(word) for word in words)
+    """Return how many tokens of text exactly equal a query token."""
+    wanted = {token for word in words for token in tokenize(word)}
+    counts = Counter(tokenize(strip_markdown(split_front_matter(text)[1])))
+    return sum(counts[token] for token in wanted)
 
 
 def search(root: Path, words: list[str]) -> tuple[list[tuple[int, Path]], int]:
@@ -19,12 +24,11 @@ def search(root: Path, words: list[str]) -> tuple[list[tuple[int, Path]], int]:
     Return the hits as (count, path) sorted by count descending, then
     path, together with the number of files scanned.
     """
-    lowered = [word.lower() for word in words]
     hits: list[tuple[int, Path]] = []
     n_files = 0
     for path in sorted(root.glob("*.md")):
         n_files += 1
-        count = count_words(path.read_text(encoding="utf-8"), lowered)
+        count = count_words(path.read_text(encoding="utf-8"), words)
         if count:
             hits.append((count, path))
     hits.sort(key=lambda hit: (-hit[0], hit[1]))
