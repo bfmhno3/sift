@@ -1,9 +1,9 @@
-"""The chapter 2 tokenizer: Latin words and CJK bigrams."""
+"""The tokenizer: Latin words and CJK bigrams, as a token stream."""
 
 import re
 import unicodedata
-
-from sift.util import compose
+from collections.abc import Iterator
+from typing import NamedTuple
 
 CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 
@@ -22,38 +22,50 @@ def fold(text: str) -> str:
     return unicodedata.normalize("NFKC", text).casefold()
 
 
-def find_runs(folded: str) -> list[re.Match[str]]:
-    """Return the Latin and CJK runs of already folded text."""
-    return list(_TOKEN.finditer(folded))
+class Token(NamedTuple):
+    """One index term and where it came from.
 
-
-def split_runs(runs: list[re.Match[str]]) -> list[str]:
-    """Turn runs into terms: Latin runs whole, CJK runs as bigrams.
-
-    A CJK run of a single character stays one unigram.
+    position counts tokens from 0. start and end are str offsets into
+    the folded text (see iter_tokens), with end exclusive.
     """
-    tokens: list[str] = []
-    for match in runs:
-        if match["latin"] is not None:
-            tokens.append(match["latin"])
-            continue
-        run = match["cjk"]
-        if len(run) == 1:
-            tokens.append(run)
-        else:
-            tokens.extend(run[i : i + 2] for i in range(len(run) - 1))
-    return tokens
+
+    text: str
+    position: int
+    start: int
+    end: int
 
 
-_PIPELINE = compose(fold, find_runs, split_runs)
-
-
-def tokenize(text: str) -> list[str]:
-    """Split text into index terms.
+def iter_tokens(text: str) -> Iterator[Token]:
+    """Yield the tokens of text one at a time.
 
     The text is NFKC-normalized and casefolded first. Latin and digit
     runs become one token each (``c++`` and ``c#`` keep their suffix).
     A CJK run becomes overlapping bigrams, or one unigram when the run
     has a single character.
+
+    start and end are offsets into the normalized, casefolded text,
+    not into the argument: NFKC can change the length of the text
+    (``"ﬁ"`` becomes ``"fi"``, ``"㎏"`` becomes ``"kg"``), and the
+    two coincide only when the folding keeps every length.
     """
-    return _PIPELINE(text)
+    folded = fold(text)
+    position = 0
+    for match in _TOKEN.finditer(folded):
+        if match["latin"] is not None:
+            yield Token(match["latin"], position, match.start(), match.end())
+            position += 1
+            continue
+        run = match["cjk"]
+        if len(run) == 1:
+            yield Token(run, position, match.start(), match.end())
+            position += 1
+            continue
+        for i in range(len(run) - 1):
+            start = match.start() + i
+            yield Token(run[i : i + 2], position, start, start + 2)
+            position += 1
+
+
+def tokenize(text: str) -> list[str]:
+    """Return the terms of text: the token texts of iter_tokens."""
+    return [token.text for token in iter_tokens(text)]

@@ -3,11 +3,12 @@
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from operator import itemgetter
 from pathlib import Path
 
-from sift.analysis.tokenize import tokenize
+from sift.analysis.tokenize import iter_tokens, tokenize
+from sift.corpus import iter_documents
 from sift.index import build_index
 from sift.markdown import split_front_matter, strip_markdown
 from sift.scoring import tf_idf
@@ -17,9 +18,14 @@ CORPUS = Path("corpus/posts")
 USAGE = "usage: python -m sift search <word>... | python -m sift stats"
 
 
-# 文件文本 -> 去掉 front matter -> 去掉 Markdown 标记 -> 词项
+def iter_terms(text: str) -> Iterator[str]:
+    """Yield the term of each token of text."""
+    return (token.text for token in iter_tokens(text))
+
+
+# 文件文本 -> 去掉 front matter -> 去掉 Markdown 标记 -> 词项流
 analyze_file = compose(
-    split_front_matter, itemgetter(1), strip_markdown, tokenize
+    split_front_matter, itemgetter(1), strip_markdown, iter_terms
 )
 
 
@@ -29,11 +35,14 @@ def load_index(root: Path) -> tuple[list[Path], dict[str, dict[int, int]]]:
 
     The doc_id of a file is its position in the sorted path list.
     """
-    paths = sorted(root.glob("*.md"))
-    docs: dict[int, list[str]] = {}
-    for doc_id, path in enumerate(paths):
-        docs[doc_id] = analyze_file(path.read_text(encoding="utf-8"))
-    return paths, build_index(docs)
+    paths: list[Path] = []
+
+    def analyzed() -> Iterator[tuple[int, Iterator[str]]]:
+        for doc_id, doc in enumerate(iter_documents(root)):
+            paths.append(doc.path)
+            yield doc_id, analyze_file(doc.text)
+
+    return paths, build_index(analyzed())
 
 
 def search_index(
