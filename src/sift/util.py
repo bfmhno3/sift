@@ -8,7 +8,7 @@ from typing import Any
 
 
 def timed[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
-    """Wrap fn so each call prints ``<qualname> took X ms`` to stderr."""
+    """Wrap fn so each call prints its name and time to stderr."""
 
     @functools.wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
