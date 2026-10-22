@@ -136,11 +136,24 @@ class PostingList:
         return out
 
 
+def _positions(tokens: Iterable[Token]) -> dict[str, list[int]]:
+    """Group the positions of tokens by token text."""
+    positions: dict[str, list[int]] = {}
+    for token in tokens:
+        positions.setdefault(token.text, []).append(token.position)
+    return positions
+
+
 class InvertedIndex(Mapping[str, PostingList]):
     """Map each term to the PostingList of the documents holding it.
 
     Only __getitem__, __iter__ and __len__ are written here; Mapping
     supplies keys, items, values, get, __contains__ and __eq__.
+
+    The Mapping itself covers the body of the documents. The titles
+    live in a second, smaller index, ``title_index``, with the same
+    layout (term to PostingList, positions counted inside the title),
+    so ``title:`` queries and title phrases reuse the same code.
     """
 
     def __init__(self) -> None:
@@ -148,23 +161,47 @@ class InvertedIndex(Mapping[str, PostingList]):
         self._postings: dict[str, PostingList] = {}
         self._doc_lens: dict[int, int] = {}
         self.documents: dict[int, Document] = {}
+        self.title_index: dict[str, PostingList] = {}
+        self._sorted_terms: list[str] | None = None
 
-    def add(self, doc: Document, tokens: Iterable[Token]) -> None:
+    def add(
+        self,
+        doc: Document,
+        tokens: Iterable[Token],
+        title_tokens: Iterable[Token] = (),
+    ) -> None:
         """Index the tokens of one document.
 
-        Documents must be added in increasing doc_id order. tokens may
-        be a generator: it is consumed once.
+        Documents must be added in increasing doc_id order. tokens and
+        title_tokens may be generators: each is consumed once. The
+        title tokens go into title_index and do not count toward the
+        document length.
         """
-        positions: dict[str, list[int]] = {}
-        length = 0
-        for token in tokens:
-            positions.setdefault(token.text, []).append(token.position)
-            length += 1
+        positions = _positions(tokens)
+        length = sum(len(found) for found in positions.values())
         self.documents[doc.doc_id] = doc
         self._doc_lens[doc.doc_id] = length
+        self._sorted_terms = None
         for term, found in positions.items():
             posting = Posting(doc.doc_id, tuple(found))
             self._postings.setdefault(term, PostingList()).append(posting)
+        for term, found in _positions(title_tokens).items():
+            posting = Posting(doc.doc_id, tuple(found))
+            self.title_index.setdefault(term, PostingList()).append(posting)
+
+    def terms_with_prefix(self, prefix: str) -> list[str]:
+        """Return the sorted body terms that start with prefix.
+
+        The sorted vocabulary is built on the first call after an
+        add and found by bisection: every term with the prefix lies
+        between prefix and prefix followed by the largest code point.
+        """
+        if self._sorted_terms is None:
+            self._sorted_terms = sorted(self._postings)
+        terms = self._sorted_terms
+        lo = bisect_left(terms, prefix)
+        hi = bisect_left(terms, prefix + "\U0010ffff")
+        return terms[lo:hi]
 
     def doc_len(self, doc_id: int) -> int:
         """Return the number of tokens indexed for doc_id."""

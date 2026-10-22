@@ -1,22 +1,22 @@
-"""Search: python -m sift search <word>... | python -m sift stats."""
+"""Run: python -m sift search | stats | bench."""
 
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
-from functools import reduce
-from operator import and_
 from pathlib import Path
 
 from sift.analysis import Pipeline, build_pipeline
 from sift.corpus import iter_documents
 from sift.document import Document
-from sift.index import InvertedIndex, PostingList
-from sift.scoring import tf_idf
+from sift.index import InvertedIndex
+from sift.query import QuerySyntaxError
+from sift.search import Searcher
+from sift.snippet import render_plain
 from sift.util import timed
 
 CORPUS = Path("corpus/posts")
-USAGE = "usage: python -m sift search <word>... | python -m sift stats"
+QUERIES = Path("bench/queries.txt")
+USAGE = "usage: python -m sift search <query> | stats | bench"
 
 
 @timed
@@ -34,63 +34,55 @@ def load_index(
     index = InvertedIndex()
     for doc in iter_documents(root):
         documents.append(doc)
-        index.add(doc, pipeline.analyze(doc.body))
+        index.add(
+            doc,
+            pipeline.analyze(doc.body),
+            pipeline.analyze(doc.title),
+        )
     return documents, index
 
 
-def search_index(
-    index: InvertedIndex,
-    words: list[str],
-    n_docs: int,
-    scoring: Callable[[int, int, int], float] = tf_idf,
-    pipeline: Pipeline | None = None,
-) -> list[tuple[float, int]]:
-    """Return (score, doc_id) of documents holding every query token.
-
-    The documents come from intersecting the posting lists with ``&``.
-    A document scores the sum over query terms of
-    ``scoring(tf, df, n_docs)``. Sorted by score descending, then
-    doc_id. pipeline must be the one that built the index; it defaults
-    to build_pipeline().
-    """
-    pipeline = pipeline or build_pipeline()
-    terms = list(
-        dict.fromkeys(token for w in words for token in pipeline.terms(w))
-    )
-    if not terms:
-        return []
-    lists = [index[t] if t in index else PostingList() for t in terms]
-    matching = reduce(and_, lists)
-    tfs = [{p.doc_id: p.tf for p in plist} for plist in lists]
-    hits = [
-        (
-            sum(
-                scoring(tf[doc_id], len(plist), n_docs)
-                for tf, plist in zip(tfs, lists, strict=True)
-            ),
-            doc_id,
-        )
-        for doc_id in matching.doc_ids()
-    ]
-    hits.sort(key=lambda hit: (-hit[0], hit[1]))
-    return hits
-
-
 def run_search(words: list[str]) -> None:
-    """Print the top 10 files by TF-IDF holding every word."""
+    """Print the top 10 documents for the query made of words.
+
+    The words are joined with spaces back into one query string, so
+    ``search '"device tree"'`` and ``search device tree`` both work.
+    """
     start = time.perf_counter()
     pipeline = build_pipeline()
     documents, index = load_index(CORPUS, pipeline)
+    searcher = Searcher(index, pipeline=pipeline)
     built = time.perf_counter()
-    hits = search_index(index, words, len(documents), pipeline=pipeline)
-    end = time.perf_counter()
-    for score, doc_id in hits[:10]:
-        print(f"{score:8.3f}  {documents[doc_id].path}")
+    try:
+        result = searcher.search(" ".join(words))
+    except QuerySyntaxError as error:
+        sys.exit(error.render())
+    for rank, hit in enumerate(result.hits, 1):
+        print(f"{rank:>2}  {hit.score:7.3f}  {hit.path}")
+        print(f"    {hit.title}")
+        print(f"    {render_plain(hit.snippet)}")
     print(
-        f"{len(hits)} hits in {len(documents)} files: "
+        f"{result.total} hits in {len(documents)} files: "
         f"index built in {(built - start) * 1000:.1f} ms, "
-        f"query took {(end - built) * 1000:.3f} ms"
+        f"query took {result.took_ms:.3f} ms"
     )
+
+
+def run_bench() -> None:
+    """Run bench/queries.txt: build the index once, time each query."""
+    pipeline = build_pipeline()
+    _, index = load_index(CORPUS, pipeline)
+    searcher = Searcher(index, pipeline=pipeline)
+    queries = QUERIES.read_text(encoding="utf-8").splitlines()
+    timings = []
+    for query in filter(None, queries):
+        start = time.perf_counter()
+        result = searcher.search(query)
+        timings.append((query, result.total, time.perf_counter() - start))
+    total = sum(seconds for _, _, seconds in timings)
+    for query, hits, seconds in timings:
+        print(f"{seconds * 1000:8.2f} ms  {hits:>4} hits  {query}")
+    print(f"{total * 1000:8.2f} ms  total for {len(timings)} queries")
 
 
 def run_stats() -> None:
@@ -113,6 +105,8 @@ def main() -> None:
         run_search(args[1:])
     elif args == ["stats"]:
         run_stats()
+    elif args == ["bench"]:
+        run_bench()
     else:
         sys.exit(USAGE)
 
