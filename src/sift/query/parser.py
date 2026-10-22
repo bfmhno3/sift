@@ -13,9 +13,17 @@ NOT binds tighter than AND, and AND tighter than OR. Both binary
 operators are left-associative.
 """
 
+from sift.errors import QuerySyntaxError
 from sift.query.ast import And, Field, Node, Not, Or, Phrase, Prefix, Term
-from sift.query.errors import QuerySyntaxError
 from sift.query.lexer import Kind, QToken, iter_tokens
+
+MAX_DEPTH = 100
+"""Deepest nesting of parentheses that parse accepts.
+
+Each level costs four Python frames, so 100 levels stay far below the
+default recursion limit of 1000. Only parentheses are counted: a flat
+chain of a thousand terms still hits the limit (a known gap).
+"""
 
 _STARTS_UNARY = frozenset(
     {Kind.WORD, Kind.PHRASE, Kind.FIELD, Kind.LPAREN, Kind.NOT, Kind.MINUS}
@@ -30,6 +38,7 @@ class _Parser:
         self.query = query
         self.tokens = list(iter_tokens(query))
         self.i = 0
+        self.depth = 0
 
     @property
     def peek(self) -> QToken:
@@ -91,7 +100,11 @@ class _Parser:
         token = self.take()
         match token.kind:
             case Kind.LPAREN:
+                self.depth += 1
+                if self.depth > MAX_DEPTH:
+                    raise self.fail("query nested too deeply", token)
                 node = self.parse_or()
+                self.depth -= 1
                 if self.peek.kind is not Kind.RPAREN:
                     raise self.fail("expected ')'")
                 self.take()

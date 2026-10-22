@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Self
 from zoneinfo import ZoneInfo
 
+from sift.errors import FrontMatterError
 from sift.frontmatter import Value, parse_front_matter
 from sift.markdown import split_front_matter, strip_markdown
 
@@ -31,6 +32,26 @@ def parse_datetime(value: str) -> datetime:
         raise ValueError(f"unrecognized date: {value!r}") from None
 
 
+def _key_line(front: str, key: str) -> int:
+    """Return the line in the file of ``key:`` in the front matter.
+
+    Line 1 is the opening ``---``, so the front matter starts at
+    line 2. A missing key is reported on line 1.
+    """
+    for number, line in enumerate(front.splitlines(), 2):
+        if line.startswith(f"{key}:"):
+            return number
+    return 1
+
+
+def _date(value: str, front: str, key: str, path: Path) -> datetime:
+    """Parse the date in meta[key], or raise a FrontMatterError."""
+    try:
+        return parse_datetime(value)
+    except ValueError as exc:
+        raise FrontMatterError(path, _key_line(front, key), str(exc)) from None
+
+
 def _optional_str(meta: dict[str, Value], key: str) -> str | None:
     """Return meta[key] as str, or None when the key is absent."""
     return None if key not in meta else str(meta[key])
@@ -54,30 +75,30 @@ class Document:
     def from_markdown(cls, doc_id: int, path: Path, text: str) -> Self:
         """Build a Document from the raw text of a Markdown file.
 
-        Raises ValueError if the front matter is malformed or lacks a
-        title or a publication date.
+        Raises FrontMatterError if the front matter is malformed or
+        lacks a title or a publication date, or a date is unreadable.
         """
         front, body = split_front_matter(text)
-        try:
-            meta = parse_front_matter(front)
-            title = str(meta["title"])
-            published = parse_datetime(str(meta["published"]))
-            updated = _optional_str(meta, "updated")
-            tags = meta.get("tags", [])
-            if not isinstance(tags, list):
-                tags = [tags]
-            return cls(
-                doc_id=doc_id,
-                path=path,
-                title=title,
-                published=published,
-                updated=None if updated is None else parse_datetime(updated),
-                tags=tuple(map(str, tags)),
-                category=_optional_str(meta, "category"),
-                series=_optional_str(meta, "series"),
-                body=strip_markdown(body),
-            )
-        except KeyError as exc:
-            raise ValueError(f"{path}: missing {exc}") from None
-        except ValueError as exc:
-            raise ValueError(f"{path}: {exc}") from exc
+        meta = parse_front_matter(front, path, first_line=2)
+        for key in ("title", "published"):
+            if key not in meta:
+                raise FrontMatterError(path, 1, f"missing {key!r}")
+        updated = _optional_str(meta, "updated")
+        tags = meta.get("tags", [])
+        if not isinstance(tags, list):
+            tags = [tags]
+        return cls(
+            doc_id=doc_id,
+            path=path,
+            title=str(meta["title"]),
+            published=_date(str(meta["published"]), front, "published", path),
+            updated=(
+                None
+                if updated is None
+                else _date(updated, front, "updated", path)
+            ),
+            tags=tuple(map(str, tags)),
+            category=_optional_str(meta, "category"),
+            series=_optional_str(meta, "series"),
+            body=strip_markdown(body),
+        )

@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from enum import Enum, auto
 from typing import NamedTuple
 
-from sift.query.errors import QuerySyntaxError
+from sift.errors import QuerySyntaxError
 
 FIELDS = frozenset({"title", "tag", "category", "series"})
 _OPERATORS = frozenset({"AND", "OR", "NOT"})

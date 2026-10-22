@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 from sift.corpus import iter_documents
+from sift.errors import FrontMatterError
 from sift.frontmatter import parse_front_matter
 from sift.markdown import split_front_matter
 
@@ -59,8 +60,8 @@ def main() -> None:
     for text in BAD:
         try:
             parse_front_matter(text)
-        except ValueError as exc:
-            print(f"  {text!r:36} -> ValueError: {exc}")
+        except FrontMatterError as exc:
+            print(f"  {text!r:36} -> FrontMatterError: {exc}")
         else:
             print(f"  {text!r:36} -> parsed (unexpected)")
 

@@ -5,6 +5,7 @@ from collections.abc import Iterator, Sequence
 from sift.analysis.base import REGISTRY, Analyzer, TokenFilter
 from sift.analysis.filters import FILTERS
 from sift.analysis.tokenize import Token
+from sift.errors import ConfigError
 
 DEFAULT_NAMES = ("mixed", "nfkc")
 
@@ -37,9 +38,17 @@ class Pipeline:
 def build_pipeline(names: Sequence[str] = DEFAULT_NAMES) -> Pipeline:
     """Build a Pipeline from names: a tokenizer, then filters.
 
-    Raise KeyError for an unknown name, or for a filter name in the
-    first place or a tokenizer name after it.
+    Raise ConfigError for an empty list, an unknown name, a filter
+    name in the first place or a tokenizer name after it.
     """
+    if not names:
+        raise ConfigError("a pipeline needs a tokenizer, got no names")
     first, *rest = names
-    tokenizer = REGISTRY[first]()
-    return Pipeline(tokenizer, *(FILTERS[name]() for name in rest))
+    if first not in REGISTRY:
+        known = ", ".join(sorted(REGISTRY))
+        raise ConfigError(f"unknown tokenizer {first!r}; known: {known}")
+    for name in rest:
+        if name not in FILTERS:
+            known = ", ".join(sorted(FILTERS))
+            raise ConfigError(f"unknown filter {name!r}; known: {known}")
+    return Pipeline(REGISTRY[first](), *(FILTERS[name]() for name in rest))

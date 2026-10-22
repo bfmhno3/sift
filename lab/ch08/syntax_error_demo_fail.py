@@ -1,6 +1,6 @@
 """An unbalanced parenthesis: the parser's exception, uncaught."""
 
-# error: sift.query.errors.QuerySyntaxError: expected ')'
+# error: sift.errors.QuerySyntaxError: expected ')'
 
 from sift.query import parse
 

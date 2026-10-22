@@ -4,8 +4,10 @@ from bisect import bisect_left
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from operator import attrgetter
+from types import TracebackType
+from typing import Self
 
-from sift.analysis import Token
+from sift.analysis import Pipeline, Token, build_pipeline
 from sift.document import Document
 
 _DOC_ID = attrgetter("doc_id")
@@ -127,6 +129,13 @@ class PostingList:
         out._postings.extend(b[j:])
         return out
 
+    def without(self, doc_ids: Iterable[int]) -> PostingList:
+        """Return a copy without the postings of doc_ids."""
+        gone = set(doc_ids)
+        out = PostingList()
+        out._postings = [p for p in self._postings if p.doc_id not in gone]
+        return out
+
     def __sub__(self, other: PostingList) -> PostingList:
         """Return the documents of self that other lacks."""
         if not isinstance(other, PostingList):
@@ -189,6 +198,26 @@ class InvertedIndex(Mapping[str, PostingList]):
             posting = Posting(doc.doc_id, tuple(found))
             self.title_index.setdefault(term, PostingList()).append(posting)
 
+    def remove(self, doc_ids: Iterable[int]) -> None:
+        """Forget the documents in doc_ids, body and title postings.
+
+        A term left without postings leaves the vocabulary. Ids that
+        are not indexed are ignored. The cost is one pass over the
+        whole vocabulary, however many documents are removed.
+        """
+        gone = set(doc_ids)
+        for index in (self._postings, self.title_index):
+            for term in list(index):
+                kept = index[term].without(gone)
+                if kept:
+                    index[term] = kept
+                else:
+                    del index[term]
+        for doc_id in gone:
+            self.documents.pop(doc_id, None)
+            self._doc_lens.pop(doc_id, None)
+        self._sorted_terms = None
+
     def terms_with_prefix(self, prefix: str) -> list[str]:
         """Return the sorted body terms that start with prefix.
 
@@ -230,3 +259,56 @@ class InvertedIndex(Mapping[str, PostingList]):
     def __iter__(self) -> Iterator[str]:
         """Iterate over the terms in the order they first appeared."""
         return iter(self._postings)
+
+
+class IndexWriter:
+    """A context manager that adds documents all or nothing.
+
+    ::
+
+        with IndexWriter(index) as writer:
+            writer.add(doc)
+
+    Leaving the block normally keeps the documents. Leaving it with
+    an exception removes every document added inside the block, so
+    the index is what it was before, and lets the exception go on.
+    """
+
+    def __init__(
+        self, index: InvertedIndex, pipeline: Pipeline | None = None
+    ) -> None:
+        """Write into index, analyzing with pipeline (the default)."""
+        self.index = index
+        self.pipeline = pipeline or build_pipeline()
+        self._added: list[int] = []
+
+    def __enter__(self) -> Self:
+        """Start a block with nothing added yet."""
+        self._added.clear()
+        return self
+
+    def add(self, doc: Document) -> None:
+        """Analyze the body and the title of doc and index them.
+
+        A doc_id that is already indexed raises ValueError and is
+        left alone, also by the rollback.
+        """
+        if doc.doc_id in self.index.documents:
+            raise ValueError(f"doc_id {doc.doc_id} is already indexed")
+        self._added.append(doc.doc_id)
+        self.index.add(
+            doc,
+            self.pipeline.analyze(doc.body),
+            self.pipeline.analyze(doc.title),
+        )
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Roll back on an exception; never swallow it."""
+        if exc_type is not None:
+            self.index.remove(self._added)
+        self._added.clear()

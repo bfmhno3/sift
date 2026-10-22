@@ -8,8 +8,10 @@ from pathlib import Path
 from sift.analysis import Pipeline, build_pipeline
 from sift.corpus import iter_documents
 from sift.document import Document
-from sift.index import InvertedIndex
-from sift.query import QuerySyntaxError
+from sift.errors import QuerySyntaxError, SiftError
+from sift.index import IndexWriter, InvertedIndex
+from sift.log import setup_logging
+from sift.query import parse
 from sift.search import Searcher
 from sift.snippet import render_plain
 from sift.util import timed
@@ -21,24 +23,27 @@ USAGE = "usage: python -m sift search <query> | stats | bench"
 
 @timed
 def load_index(
-    root: Path, pipeline: Pipeline | None = None
+    root: Path,
+    pipeline: Pipeline | None = None,
+    *,
+    keep_going: bool = False,
 ) -> tuple[list[Document], InvertedIndex]:
     """Read, analyze and index every Markdown file under root.
 
     pipeline defaults to build_pipeline().
 
     The doc_id of a document is its position in the sorted path list.
+    Files with a malformed front matter are collected: without
+    keep_going they raise one ExceptionGroup after the last file and
+    no index is returned, with keep_going they are logged as warnings
+    and skipped (their doc_ids stay unused).
     """
-    pipeline = pipeline or build_pipeline()
     documents: list[Document] = []
     index = InvertedIndex()
-    for doc in iter_documents(root):
-        documents.append(doc)
-        index.add(
-            doc,
-            pipeline.analyze(doc.body),
-            pipeline.analyze(doc.title),
-        )
+    with IndexWriter(index, pipeline) as writer:
+        for doc in iter_documents(root, keep_going=keep_going):
+            documents.append(doc)
+            writer.add(doc)
     return documents, index
 
 
@@ -48,15 +53,14 @@ def run_search(words: list[str]) -> None:
     The words are joined with spaces back into one query string, so
     ``search '"device tree"'`` and ``search device tree`` both work.
     """
+    query = " ".join(words)
+    parse(query)  # fail fast: a typo must not cost an index build
     start = time.perf_counter()
     pipeline = build_pipeline()
     documents, index = load_index(CORPUS, pipeline)
     searcher = Searcher(index, pipeline=pipeline)
     built = time.perf_counter()
-    try:
-        result = searcher.search(" ".join(words))
-    except QuerySyntaxError as error:
-        sys.exit(error.render())
+    result = searcher.search(query)
     for rank, hit in enumerate(result.hits, 1):
         print(f"{rank:>2}  {hit.score:7.3f}  {hit.path}")
         print(f"    {hit.title}")
@@ -98,9 +102,8 @@ def run_stats() -> None:
     print(f"index built in {(built - start) * 1000:.1f} ms")
 
 
-def main() -> None:
-    """Dispatch the subcommand given on the command line."""
-    args = sys.argv[1:]
+def dispatch(args: list[str]) -> None:
+    """Run the subcommand named by args, or exit with the usage."""
     if args[:1] == ["search"] and len(args) > 1:
         run_search(args[1:])
     elif args == ["stats"]:
@@ -109,6 +112,31 @@ def main() -> None:
         run_bench()
     else:
         sys.exit(USAGE)
+
+
+def main() -> None:
+    """Run the command line and turn Sift errors into exit codes.
+
+    A QuerySyntaxError prints the query and a caret line and exits 3.
+    Any other SiftError, alone or inside an ExceptionGroup, prints
+    ``error: ...`` and exits 1. The full contract arrives in ch11.
+    """
+    setup_logging()
+    try:
+        dispatch(sys.argv[1:])
+    except QuerySyntaxError as error:
+        print(error.render(), file=sys.stderr)
+        sys.exit(3)
+    except SiftError as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(1)
+    except ExceptionGroup as group:
+        if group.subgroup(lambda e: not isinstance(e, SiftError)):
+            raise
+        print(f"error: {group.message}", file=sys.stderr)
+        for error in group.exceptions:
+            print(f"  {error}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

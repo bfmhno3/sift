@@ -1,6 +1,9 @@
 """A hand-written parser for the YAML subset used by the posts."""
 
 import re
+from pathlib import Path
+
+from sift.errors import FrontMatterError
 
 type Value = str | list[str] | bool | int
 
@@ -16,6 +19,11 @@ _INLINE_ITEM = re.compile(
 )
 _FLOW_START = "[{|>&*!%@`"
 _BLOCK_HEADERS = (">", ">-", "|", "|-")
+
+
+def _no_value(path: Path | None, line: int, key: str) -> FrontMatterError:
+    """Return the error for a ``key:`` with neither value nor items."""
+    return FrontMatterError(path, line, f"key {key!r} has no value")
 
 
 def _unescape(match: re.Match[str]) -> str:
@@ -89,7 +97,9 @@ def _block_scalar(lines: list[str], i: int, header: str) -> tuple[str, int]:
     return (text if header.endswith("-") or not text else text + "\n"), i
 
 
-def parse_front_matter(text: str) -> dict[str, Value]:
+def parse_front_matter(
+    text: str, path: Path | None = None, first_line: int = 1
+) -> dict[str, Value]:
     """Parse the front matter text of a post into a dict.
 
     The input is the text between the two ``---`` lines. Supported:
@@ -97,13 +107,18 @@ def parse_front_matter(text: str) -> dict[str, Value]:
     ``true``/``false``, integers, inline lists ``[a, b]``, block lists
     of ``  - item`` lines and the block scalars ``>``, ``>-``, ``|``
     and ``|-`` with indented text lines. Anything else, such as
-    nesting, anchors or a repeated key, raises ValueError with the
-    line number.
+    nesting, anchors or a repeated key, raises FrontMatterError.
+
+    path names the file in the error and first_line is the number
+    that the first line of text has in that file (2 when text comes
+    from between two ``---`` lines), so error.line is a line of the
+    file.
     """
     result: dict[str, Value] = {}
     lines = text.splitlines()
     open_list: list[str] | None = None
     open_key = ""
+    open_line = 0
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -117,7 +132,7 @@ def parse_front_matter(text: str) -> dict[str, Value]:
                 open_list.append(_parse_string(m[1].strip()))
                 continue
             if open_list is not None and not open_list:
-                raise ValueError(f"key {open_key!r} has no value")
+                raise _no_value(path, first_line + open_line - 1, open_key)
             open_list = None
             if (m := _KEY.fullmatch(line.rstrip())) is None:
                 raise ValueError(f"cannot parse line: {line!r}")
@@ -126,13 +141,15 @@ def parse_front_matter(text: str) -> dict[str, Value]:
                 raise ValueError(f"duplicate key {key!r}")
             if raw is None:
                 open_list = result[key] = []
-                open_key = key
+                open_key, open_line = key, i
             elif raw[0] in ">|":
                 result[key], i = _block_scalar(lines, i, raw.strip())
             else:
                 result[key] = _parse_scalar(raw.strip())
         except ValueError as exc:
-            raise ValueError(f"line {i}: {exc}") from None
+            raise FrontMatterError(
+                path, first_line + i - 1, str(exc)
+            ) from None
     if open_list is not None and not open_list:
-        raise ValueError(f"key {open_key!r} has no value")
+        raise _no_value(path, first_line + open_line - 1, open_key)
     return result
