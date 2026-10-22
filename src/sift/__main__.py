@@ -131,7 +131,8 @@ def main() -> None:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)
     except ExceptionGroup as group:
-        if group.subgroup(lambda e: not isinstance(e, SiftError)):
+        _, other = group.split(SiftError)
+        if other is not None:
             raise
         print(f"error: {group.message}", file=sys.stderr)
         for error in group.exceptions:
