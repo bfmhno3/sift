@@ -12,7 +12,7 @@ class Scorer(ABC):
         """Return the score of one term in one document."""
 
     def describe(self) -> str:
-        """Concrete method on an ABC: subclasses inherit it."""
+        """Describe the analyzer; subclasses inherit this method."""
         return f"{type(self).__name__}: {self.score(3, 10, 100):.3f}"
 
 

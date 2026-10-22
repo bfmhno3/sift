@@ -4,7 +4,7 @@ from collections.abc import Iterator, Mapping
 
 
 class Upper(Mapping[str, int]):
-    """A read-only view of a dict with case-insensitive keys."""
+    """A read-only copy of a dict with upper-cased keys."""
 
     def __init__(self, data: dict[str, int]) -> None:
         """Store the data under upper-cased keys."""

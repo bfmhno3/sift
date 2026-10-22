@@ -3,6 +3,7 @@
 import os
 from collections.abc import Iterable
 from io import StringIO
+from typing import Any
 
 
 class Shout:
@@ -18,13 +19,13 @@ class Shout:
         return len(text)
 
 
-def dump(lines: Iterable[str], out) -> None:
+def dump(lines: Iterable[str], out: Any) -> None:
     """Write every line to out: anything with write() will do."""
     for line in lines:
         out.write(line + "\n")
 
 
-def total_length(items) -> int:
+def total_length(items: Iterable[Any]) -> int:
     """Sum len() of items: EAFP instead of an isinstance check."""
     total = 0
     for item in items:

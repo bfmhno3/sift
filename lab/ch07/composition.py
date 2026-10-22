@@ -17,6 +17,7 @@ from sift.analysis import (
 TEXT = "The Kalman Filter and the C++ port"
 
 
+# BAD: 每多一种组合就多一层继承
 class LatinBase:
     """Hierarchy level 1: split into Latin words."""
 

@@ -47,11 +47,12 @@ def main() -> None:
     print("Bottom.__mro__ ", names(Bottom))
     print("Flipped.__mro__", names(Flipped))
     print("Left.__mro__   ", names(Left))
+    # Left.hello calls super(): in a Bottom it reaches Right, not Base.
     print("Bottom().hello()", Bottom().hello())
     print("Flipped().hello()", Flipped().hello())
-    # Left.hello calls super(): in a Bottom it reaches Right, not Base.
+    # A plain Left has no Right behind it: super() reaches Base.
     print("Left().hello()  ", Left().hello())
-    print("Base appears once and last:", names(Bottom).count("Base"))
+    print("Base comes just before object:", names(Bottom)[-2] == "Base")
 
 
 if __name__ == "__main__":

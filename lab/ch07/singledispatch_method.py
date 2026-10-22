@@ -14,7 +14,7 @@ class Analyze:
 
     @singledispatchmethod
     def terms(self, source: object) -> list[str]:
-        """Fallback: the type is not supported."""
+        """Reject a source type nobody registered."""
         raise TypeError(f"cannot analyze {type(source).__name__}")
 
     @terms.register
