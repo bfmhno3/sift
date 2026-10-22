@@ -4,9 +4,9 @@ endif
 
 CHAPTERS := $(notdir $(wildcard lab/ch*))
 
-.PHONY: corpus chapters lint ci clean $(CHAPTERS)
+.PHONY: corpus chapters lint test cov ci clean $(CHAPTERS)
 
-# Later chapters add test, typecheck and ext targets and list them in ci.
+# Later chapters add typecheck and ext targets and list them in ci.
 
 corpus:
 	@test -f corpus/COMMIT || ./scripts/fetch-corpus.sh
@@ -20,7 +20,13 @@ lint:
 	ruff format --check --line-length 79 .
 	ruff check .
 
-ci: lint chapters
+test:
+	pytest
+
+cov:
+	pytest --cov=sift --cov-report=term-missing
+
+ci: lint test chapters
 
 clean:
 	rm -rf out .sift
