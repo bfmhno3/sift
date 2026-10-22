@@ -1,11 +1,11 @@
-"""Inverted index, version 2: postings with positions."""
+"""Inverted index, version 3: a Mapping of terms to postings."""
 
 from bisect import bisect_left
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from operator import attrgetter
 
-from sift.analysis.tokenize import Token
+from sift.analysis import Token
 from sift.document import Document
 
 _DOC_ID = attrgetter("doc_id")
@@ -136,12 +136,18 @@ class PostingList:
         return out
 
 
-class InvertedIndex:
-    """Map each term to the PostingList of the documents holding it."""
+class InvertedIndex(Mapping[str, PostingList]):
+    """Map each term to the PostingList of the documents holding it.
+
+    Only __getitem__, __iter__ and __len__ are written here; Mapping
+    supplies keys, items, values, get, __contains__ and __eq__.
+    """
 
     def __init__(self) -> None:
         """Create an empty index."""
         self._postings: dict[str, PostingList] = {}
+        self._doc_lens: dict[int, int] = {}
+        self.documents: dict[int, Document] = {}
 
     def add(self, doc: Document, tokens: Iterable[Token]) -> None:
         """Index the tokens of one document.
@@ -150,19 +156,35 @@ class InvertedIndex:
         be a generator: it is consumed once.
         """
         positions: dict[str, list[int]] = {}
+        length = 0
         for token in tokens:
             positions.setdefault(token.text, []).append(token.position)
+            length += 1
+        self.documents[doc.doc_id] = doc
+        self._doc_lens[doc.doc_id] = length
         for term, found in positions.items():
             posting = Posting(doc.doc_id, tuple(found))
             self._postings.setdefault(term, PostingList()).append(posting)
 
+    def doc_len(self, doc_id: int) -> int:
+        """Return the number of tokens indexed for doc_id."""
+        return self._doc_lens[doc_id]
+
+    @property
+    def n_docs(self) -> int:
+        """Return the number of documents added."""
+        return len(self.documents)
+
+    @property
+    def avg_doc_len(self) -> float:
+        """Return the mean tokens per document (0.0 when empty)."""
+        if not self._doc_lens:
+            return 0.0
+        return sum(self._doc_lens.values()) / len(self._doc_lens)
+
     def __getitem__(self, term: str) -> PostingList:
         """Return the posting list of term; KeyError if unknown."""
         return self._postings[term]
-
-    def __contains__(self, term: object) -> bool:
-        """Return True if term occurs in at least one document."""
-        return term in self._postings
 
     def __len__(self) -> int:
         """Return the number of distinct terms."""
