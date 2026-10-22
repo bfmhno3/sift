@@ -34,6 +34,8 @@ def main() -> None:
     assert parse(text) == node
     print("reparsed tree is equal")
     try:
+        # error: AssertionError: Expected code to be unreachable, but got:
+        # error: 'not a node'
         show("not a node")  # type: ignore[arg-type]
     except AssertionError as exc:
         print("assert_never raised:", exc)
