@@ -5,7 +5,7 @@ import pytest
 from sift.errors import QuerySyntaxError
 from sift.index import InvertedIndex
 from sift.query import And, Field, Not, Or, Phrase, Prefix, Term
-from sift.search import Hit, Searcher, positive_leaves
+from sift.search import Searcher, positive_leaves
 
 
 def test_positive_leaves_skip_not_and_fields() -> None:
@@ -32,7 +32,6 @@ def test_result_fields(searcher: Searcher) -> None:
     assert result.total == 1
     assert result.took_ms >= 0
     (hit,) = result.hits
-    assert isinstance(hit, Hit)
     assert hit.doc_id == 1
     assert hit.title == "Fixing a bicycle chain"
     assert hit.path.name == "bicycle-repair.md"

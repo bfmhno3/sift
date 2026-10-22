@@ -34,7 +34,10 @@ def _origin(text: str) -> tuple[str, list[int] | None]:
     the same. A text of equal length is not enough: ``"A\\u0301ﬁ"``
     loses one character to composition and gains one to the ligature.
     If the per-character folds do not add up to fold(text) (combining
-    marks), the folded text itself is shown, with offsets as they are.
+    marks), the folded text itself is shown: its offsets are exactly
+    those iter_tokens reports for text, which must therefore be
+    tokenized from text, never from the folded copy (folding twice
+    is not idempotent: ``ss`` plus U+0301 composes on the second pass).
     """
     if text.isascii():
         return text, None
@@ -49,11 +52,15 @@ def _origin(text: str) -> tuple[str, list[int] | None]:
 
 
 def _hit_spans(
-    shown: str, table: list[int] | None, terms: Collection[str]
+    text: str, table: list[int] | None, terms: Collection[str]
 ) -> list[tuple[int, int]]:
-    """Return disjoint (start, end) offsets in shown of the hits."""
+    """Return disjoint (start, end) offsets in the shown text of hits.
+
+    text is the original text, tokenized once; the offsets are into
+    fold(text) and are mapped through table when there is one.
+    """
     spans: list[tuple[int, int]] = []
-    for token in iter_tokens(shown):
+    for token in iter_tokens(text):
         if token.text not in terms:
             continue
         start, end = token.start, token.end
@@ -90,7 +97,7 @@ def make_snippet(text: str, terms: Collection[str], width: int = 160) -> Parts:
     [('one two', False)]
     """
     shown, table = _origin(text)
-    spans = _hit_spans(shown, table, terms)
+    spans = _hit_spans(text, table, terms)
     if not spans:
         lo, hi = 0, width
     else:

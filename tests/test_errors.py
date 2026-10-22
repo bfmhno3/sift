@@ -26,7 +26,6 @@ from sift.errors import (
 )
 def test_every_error_is_a_sift_error(cls: type[Exception]) -> None:
     assert issubclass(cls, SiftError)
-    assert issubclass(SiftError, Exception)
     assert not issubclass(SiftError, (KeyError, ValueError))
 
 

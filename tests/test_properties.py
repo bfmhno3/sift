@@ -204,7 +204,7 @@ def test_evaluate_agrees_with_plain_sets(node, mini_index) -> None:
 
 
 @given(
-    st.text(alphabet="aAbB \u0301\u00e9\ufb01\u2026", max_size=14),
+    st.text(alphabet="aAbB \u0301\u00e9\ufb01\u2026\u00df\u1e9e", max_size=14),
 )
 def test_snippet_highlights_exactly_the_matching_words(text) -> None:
     # Latin words only and a window wider than the text: every hit is

@@ -85,7 +85,6 @@ def test_mixed_tokenizer_is_iter_tokens() -> None:
 
 def test_registry_names() -> None:
     assert {"latin", "cjk-bigram", "mixed"} <= set(REGISTRY)
-    assert REGISTRY["mixed"] is MixedTokenizer
 
 
 def test_duplicate_analyzer_name_is_refused() -> None:

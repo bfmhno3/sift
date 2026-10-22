@@ -2,6 +2,7 @@
 
 import pytest
 
+from sift.analysis.tokenize import fold
 from sift.snippet import html, make_snippet, render_html, render_plain
 
 LONG = "word " * 100 + "needle " + "word " * 100
@@ -102,6 +103,17 @@ def test_equal_length_does_not_mean_equal_offsets() -> None:
     parts = make_snippet(text, {"fi"})
     assert [t for t, hit in parts if hit] == ["fi"]
     assert render_plain(parts) == "á[fi]"
+
+
+def test_sharp_s_with_accent_is_tokenized_once() -> None:
+    # Regression, found by a brute-force sweep after the fix above:
+    # when the per-character folds do not add up (a combining mark
+    # after a sharp s), the folded text is shown, and tokenizing that
+    # copy folded it a second time ("ss" plus U+0301 composes).
+    text = "a\u0301\u00df\u0301a"
+    parts = make_snippet(text, {"a", "ss"})
+    assert all(fold(shown) in {"a", "ss"} for shown, hit in parts if hit)
+    assert "[\u0301]" not in render_plain(parts)
 
 
 def test_ligature_after_ascii_text_still_maps_back() -> None:
