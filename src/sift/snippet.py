@@ -29,18 +29,22 @@ def _origin(text: str) -> tuple[str, list[int] | None]:
     shorter than text when NFKC rewrites a character (``…`` becomes
     three dots). The table lists, for every index i of text, the
     offset in fold(text) where character i starts, plus the final
-    length, so a folded offset maps back with bisect. None means the
-    two texts have the same length and offsets are the same. If the
-    per-character folds do not add up to fold(text) (combining
+    length, so a folded offset maps back with bisect. None means that
+    every character folds to exactly one character and offsets are
+    the same. A text of equal length is not enough: ``"A\\u0301ﬁ"``
+    loses one character to composition and gains one to the ligature.
+    If the per-character folds do not add up to fold(text) (combining
     marks), the folded text itself is shown, with offsets as they are.
     """
-    folded = fold(text)
-    if len(folded) == len(text):
+    if text.isascii():
         return text, None
+    folded = fold(text)
     lengths = [_folded_len(ch) for ch in text]
     table = list(accumulate(lengths, initial=0))
     if table[-1] != len(folded):
         return folded, None
+    if all(length == 1 for length in lengths):
+        return text, None
     return text, table
 
 
@@ -75,6 +79,15 @@ def make_snippet(text: str, terms: Collection[str], width: int = 160) -> Parts:
     ``(text, is_hit)`` pairs covering a window of about width
     characters; ``…`` marks a cut edge. With no hit, the window is
     the start of the text. Whitespace runs are collapsed to a space.
+
+    >>> text = "The quick brown fox jumps over the lazy dog"
+    >>> parts = make_snippet(text, {"fox"}, width=20)
+    >>> parts[2]
+    ('fox', True)
+    >>> render_plain(parts)
+    '…rown [fox] jumps over …'
+    >>> make_snippet("one two", {"zebra"})
+    [('one two', False)]
     """
     shown, table = _origin(text)
     spans = _hit_spans(shown, table, terms)
@@ -119,6 +132,12 @@ def html(template: Template) -> str:
     Static text is the author's HTML and passes through. A value that
     is itself a Template is rendered recursively; any other value is
     converted, formatted, then escaped with ``html.escape``.
+
+    >>> name = "<b>&"
+    >>> html(t"<p>{name}</p>")
+    '<p>&lt;b&gt;&amp;</p>'
+    >>> html(t"<i>{t'<{name}>'}</i>")
+    '<i><&lt;b&gt;&amp;></i>'
     """
     out: list[str] = []
     for item in template:
@@ -135,7 +154,11 @@ def html(template: Template) -> str:
 
 
 def render_html(parts: Parts) -> str:
-    """Return parts as HTML: text escaped, hits wrapped in <mark>."""
+    """Return parts as HTML: text escaped, hits wrapped in <mark>.
+
+    >>> render_html([("a < ", False), ("b", True)])
+    'a &lt; <mark>b</mark>'
+    """
     return "".join(
         html(t"<mark>{text}</mark>") if hit else html(t"{text}")
         for text, hit in parts
@@ -143,5 +166,9 @@ def render_html(parts: Parts) -> str:
 
 
 def render_plain(parts: Parts) -> str:
-    """Return parts as text with ``[`` and ``]`` around the hits."""
+    """Return parts as text with ``[`` and ``]`` around the hits.
+
+    >>> render_plain([("a ", False), ("b", True), (" c", False)])
+    'a [b] c'
+    """
     return "".join(f"[{text}]" if hit else text for text, hit in parts)
