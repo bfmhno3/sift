@@ -39,12 +39,14 @@ def main() -> None:
 
     print("-- suggestions are computed by the traceback module (3.12+)")
     try:
+        # error: AttributeError: 'str' object has no attribute 'uper'
         "abc".uper()
     except AttributeError as exc:
         print("".join(traceback.format_exception_only(exc)), end="")
 
     print("-- NameError suggestions")
     try:
+        # error: NameError: name 'prnt' is not defined
         prnt("x")  # noqa: F821
     except NameError as exc:
         print("".join(traceback.format_exception_only(exc)), end="")

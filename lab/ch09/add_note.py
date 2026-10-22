@@ -34,7 +34,7 @@ def main() -> None:
             print(line, end="")
 
     err = ValueError("plain")
-    print("no notes yet:", hasattr(err, "__notes__"))
+    print("has __notes__ before:", hasattr(err, "__notes__"))
     err.add_note("first")
     err.add_note("second")
     print("after two notes:", err.__notes__)

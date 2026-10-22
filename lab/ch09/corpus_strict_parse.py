@@ -1,4 +1,4 @@
-"""How many corpus files fail the strict front matter parser?"""
+"""Count the corpus files the strict front matter parser rejects."""
 
 from pathlib import Path
 

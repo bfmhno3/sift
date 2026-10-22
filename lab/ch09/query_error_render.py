@@ -1,4 +1,4 @@
-"""Caret output of QuerySyntaxError.render() for four bad queries."""
+"""Show QuerySyntaxError.render() for the bad queries."""
 
 from sift.errors import QuerySyntaxError
 from sift.query import parse
