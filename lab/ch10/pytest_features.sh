@@ -4,6 +4,12 @@
 # own. Expected failures are part of the demos: set +e where needed.
 set -uo pipefail
 
+# The nix pytest script runs its own interpreter, which does not see the
+# editable install in .venv: go through the venv python instead.
+pytest() {
+    python3 -m pytest "$@"
+}
+
 out=$PWD/out/ch10
 mkdir -p "$out"
 log="$out/pytest_features.txt"
@@ -34,7 +40,7 @@ show pytest -vv -k "test_strip_inline_syntax and bold" \
 show pytest -vv tests/test_corpus.py -k "sorted_path or lazily"
 
 # monkeypatch and capsys: the CLI test swaps CORPUS and reads stdout.
-show pytest -vv tests/test_main.py \
+show pytest -vv tests/test_cli.py \
     -k "test_search_prints or test_stats"
 show pytest -vv tests/test_log.py -k "stderr"
 

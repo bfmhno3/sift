@@ -2,8 +2,8 @@
 
 from itertools import product
 
-from sift.__main__ import CORPUS, load_index
 from sift.analysis import build_pipeline
+from sift.cli import CORPUS, load_index
 from sift.search import Searcher
 
 QUERY = "kalman filter"

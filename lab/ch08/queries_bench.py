@@ -4,8 +4,8 @@ import statistics
 import time
 from pathlib import Path
 
-from sift.__main__ import CORPUS, QUERIES, load_index
 from sift.analysis import build_pipeline
+from sift.cli import CORPUS, QUERIES, load_index
 from sift.search import Searcher
 
 REPEATS = 5

@@ -4,8 +4,8 @@ from collections.abc import Callable
 from functools import reduce
 from operator import and_
 
-from sift.__main__ import CORPUS, load_index
 from sift.analysis import build_pipeline
+from sift.cli import CORPUS, load_index
 from sift.index import InvertedIndex, PostingList
 from sift.scoring import idf, tf_idf
 

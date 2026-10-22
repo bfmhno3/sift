@@ -85,7 +85,8 @@
               }
             }
             export SIFT_CJK_FONT="${pkgs.noto-fonts-cjk-sans}/share/fonts/opentype/noto-cjk/NotoSansCJK-VF.otf.ttc"
-            export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
+            unset PYTHONPATH _PYTHON_SYSCONFIGDATA_NAME _PYTHON_HOST_PLATFORM
+            if [ ! -d .venv ]; then python3 -m venv --system-site-packages .venv; fi; source .venv/bin/activate; pip install -q --no-deps --no-build-isolation -e .
             export UV_PYTHON_DOWNLOADS=never UV_PYTHON=python3.14 PYTHONHASHSEED=0
             echo "sift dev shell: $(python3 --version), $(python3.14t --version) (free-threaded), $(ruff --version), $(rustc --version)"
           '';

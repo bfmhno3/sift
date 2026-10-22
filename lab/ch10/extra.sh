@@ -3,6 +3,12 @@
 # the pytest-benchmark run.
 set -euo pipefail
 
+# The nix pytest script runs its own interpreter, which does not see the
+# editable install in .venv: go through the venv python instead.
+pytest() {
+    python3 -m pytest "$@"
+}
+
 mkdir -p out/ch10
 
 bash lab/ch10/pytest_features.sh > /dev/null

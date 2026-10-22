@@ -1,0 +1,282 @@
+"""Tests for the command line in sift.cli."""
+
+import io
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import sift
+import sift.cli as cli
+from sift.errors import ConfigError
+
+
+@pytest.fixture(autouse=True)
+def no_sift_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with SIFT_INDEX unset."""
+    monkeypatch.delenv("SIFT_INDEX", raising=False)
+
+
+@pytest.fixture
+def mini_cli(monkeypatch: pytest.MonkeyPatch, mini_root):
+    """Point the CLI at the fixture posts instead of corpus/posts."""
+    monkeypatch.setattr(cli, "CORPUS", mini_root)
+    return cli
+
+
+def run_main(*args: str) -> int:
+    """Run main() with the args; return the exit status."""
+    with pytest.raises(SystemExit) as caught:
+        cli.main(args)
+    assert isinstance(caught.value.code, int)
+    return caught.value.code
+
+
+def test_search_prints_ranked_hits(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["search", "chain", "tool"])
+    out = capsys.readouterr().out
+    assert "bicycle-repair.md" in out
+    assert "Fixing a bicycle chain" in out
+    assert "[chain]" in out.lower()
+    assert "1 hits in 8 files" in out
+
+
+def test_search_words_are_joined_into_one_query(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["search", '"chain', 'tool"'])
+    assert "1 hits" in capsys.readouterr().out
+
+
+def test_search_limit(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
+    mini_cli.main(["search", "--limit", "1", "the", "OR", "a"])
+    out = capsys.readouterr().out
+    assert out.count(".md") == 1
+
+
+def test_search_json(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
+    mini_cli.main(["search", "--json", "chain", "tool"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["total"] == 1
+    assert data["hits"][0]["path"].endswith("bicycle-repair.md")
+    assert data["hits"][0]["title"] == "Fixing a bicycle chain"
+
+
+def test_search_no_log_is_accepted(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["search", "--no-log", "chain"])
+    assert "hits in 8 files" in capsys.readouterr().out
+
+
+def test_search_dash_reads_stdin(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO("chain\n"))
+    mini_cli.main(["search", "-"])
+    assert "bicycle-repair.md" in capsys.readouterr().out
+
+
+def test_zero_hits_is_not_an_error(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["search", "zzzzqqqq"])
+    assert "0 hits" in capsys.readouterr().out
+
+
+def test_stats(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
+    mini_cli.main(["stats"])
+    out = capsys.readouterr().out
+    assert "documents: 8" in out
+    assert "vocabulary: " in out
+
+
+def test_index_prints_stats(
+    mini_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli.main(["index", "--corpus", str(mini_root)])
+    out = capsys.readouterr().out
+    assert "documents: 8" in out
+    assert "index built in" in out
+
+
+def test_show_prints_the_document(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["show", "0"])
+    out = capsys.readouterr().out
+    assert out.startswith("title: ")
+    assert "\npath: " in out
+
+
+def test_show_unknown_id_exits_1(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert run_main("show", "99") == 1
+    assert capsys.readouterr().err == "error: no document with id 99\n"
+
+
+def test_open_runs_the_editor_on_the_file(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "args.txt"
+    script = tmp_path / "editor.sh"
+    script.write_text(f'#!/bin/sh\necho "$@" > {log}\n')
+    script.chmod(0o755)
+    monkeypatch.setenv("EDITOR", str(script))
+    mini_cli.main(["open", "0"])
+    assert log.read_text().strip().endswith(".md")
+
+
+def test_open_missing_editor_exits_1(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("EDITOR", "/nonexistent/editor")
+    assert run_main("open", "0") == 1
+    assert "cannot run editor" in capsys.readouterr().err
+
+
+def test_bench_search_runs_every_query(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    queries = tmp_path / "queries.txt"
+    queries.write_text("chain\n\n编译\n", encoding="utf-8")
+    monkeypatch.setattr(mini_cli, "QUERIES", queries)
+    mini_cli.main(["bench", "search"])
+    out = capsys.readouterr().out
+    assert "total for 2 queries" in out
+
+
+def test_bench_index_repeats(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["bench", "index", "--repeat", "2"])
+    assert "2 builds: min " in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["search"],
+        ["nope"],
+        ["bench"],
+        ["show", "x"],
+        ["search", "--limit", "0", "a"],
+    ],
+)
+def test_bad_usage_exits_2(args: list[str]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        cli.main(args)
+    assert caught.value.code == 2
+
+
+def test_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["--version"])
+    assert caught.value.code == 0
+    assert capsys.readouterr().out == f"sift {sift.__version__}\n"
+
+
+def test_query_syntax_error_exits_3_with_a_caret(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert run_main("search", "a AND") == 3
+    err = capsys.readouterr().err
+    assert err == "expected a term\n  a AND\n       ^\n"
+
+
+@pytest.mark.parametrize("command", ["stats", "show 0", "open 0"])
+def test_missing_index_dir_exits_4(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    command: str,
+) -> None:
+    missing = tmp_path / "nope"
+    monkeypatch.setenv("SIFT_INDEX", str(missing))
+    assert run_main(*command.split()) == 4
+    err = capsys.readouterr().err
+    assert err == f"sift: no index at {missing}, run 'sift index' first\n"
+
+
+def test_search_with_missing_index_dir_exits_4(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SIFT_INDEX", str(tmp_path / "nope"))
+    assert run_main("search", "rust") == 4
+
+
+def test_existing_index_dir_still_searches_in_memory(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("SIFT_INDEX", str(tmp_path))
+    mini_cli.main(["search", "chain"])
+    assert "hits in 8 files" in capsys.readouterr().out
+
+
+def test_sift_error_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def boom(args: object) -> None:
+        raise ConfigError("bad setting")
+
+    monkeypatch.setattr(cli, "run_stats", boom)
+    assert run_main("stats") == 1
+    assert capsys.readouterr().err == "error: bad setting\n"
+
+
+def test_group_of_sift_errors_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def boom(args: object) -> None:
+        raise ExceptionGroup(
+            "2 files failed", [ConfigError("a"), ConfigError("b")]
+        )
+
+    monkeypatch.setattr(cli, "run_stats", boom)
+    assert run_main("stats") == 1
+    assert capsys.readouterr().err == "error: 2 files failed\n  a\n  b\n"
+
+
+def test_group_with_a_bug_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(args: object) -> None:
+        raise ExceptionGroup("mixed", [ConfigError("a"), KeyError("b")])
+
+    monkeypatch.setattr(cli, "run_stats", boom)
+    with pytest.raises(ExceptionGroup, match="mixed"):
+        cli.main(["stats"])
+
+
+def test_python_dash_m_sift_is_the_same_cli() -> None:
+    done = subprocess.run(
+        [sys.executable, "-m", "sift", "--version"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert done.stdout == f"sift {sift.__version__}\n"

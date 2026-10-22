@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sift"
+version = "0.1.0"
+description = "A local full-text search engine for Markdown posts."
+requires-python = ">=3.14"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+dependencies = []
+
+[project.scripts]
+sift = "sift.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sift"]
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules -q"
+testpaths = ["tests", "src"]
+markers = [
+  "slow: needs the full corpus or many generated cases",
+]

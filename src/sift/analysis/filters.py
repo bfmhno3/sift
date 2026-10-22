@@ -1,41 +1,14 @@
 """Token filters: normalization and stopword removal."""
 
 from collections.abc import Iterable, Iterator
+from importlib.resources import files
 
 from sift.analysis.tokenize import Token, fold
 
 FILTERS: dict[str, type[TokenFilterBase]] = {}
 
-# Placeholder list; ch11 moves it into stopwords.txt.
-STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "for",
-        "from",
-        "has",
-        "in",
-        "is",
-        "it",
-        "its",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "to",
-        "was",
-        "were",
-        "will",
-        "with",
-    }
-)
+_STOPWORDS_FILE = files("sift.analysis").joinpath("stopwords.txt")
+STOPWORDS = frozenset(_STOPWORDS_FILE.read_text(encoding="utf-8").split())
 
 
 class TokenFilterBase:

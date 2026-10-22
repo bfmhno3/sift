@@ -41,6 +41,7 @@ The posts live at <https://bfmhno3.github.io>.
 ## Layout
 
 ```text
+pyproject.toml       package metadata (hatchling), pytest settings, the `sift` script
 src/sift/            the package
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
@@ -60,14 +61,16 @@ Lab file conventions, enforced by `scripts/chapter.py`:
 
 ## Running
 
-Everything runs from the repository root inside the Nix dev shell.
+Everything runs from the repository root inside the Nix dev shell. The first `nix develop` creates `.venv` (with
+`--system-site-packages`) and installs Sift into it in editable mode, so `sift` and `python3 -m sift` work.
 
 ```bash
 nix develop
 make corpus    # fetch the 123 posts into corpus/ (pinned commit)
 make ch01      # one chapter
-make test      # the pytest suite (make cov adds coverage)
+make test      # the pytest suite (python3 -m pytest) (make cov adds coverage)
 make ci        # lint, tests and every chapter
+sift search --limit 3 rust
 ```
 
 ## Corpus license

@@ -4,6 +4,7 @@ import pytest
 
 from sift.analysis import (
     REGISTRY,
+    STOPWORDS,
     Analyzer,
     CjkBigramTokenizer,
     LatinTokenizer,
@@ -111,6 +112,12 @@ def test_stopword_filter_keeps_positions() -> None:
     pipeline = Pipeline(MixedTokenizer(), StopwordFilter())
     tokens = list(pipeline.analyze("the cat of dogs"))
     assert [(t.text, t.position) for t in tokens] == [("cat", 1), ("dogs", 3)]
+
+
+def test_stopwords_come_from_the_resource_file() -> None:
+    assert len(STOPWORDS) == 25
+    assert {"the", "and", "with"} <= STOPWORDS
+    assert StopwordFilter().words == STOPWORDS
 
 
 def test_default_pipeline() -> None:

@@ -21,10 +21,10 @@ lint:
 	ruff check .
 
 test:
-	pytest
+	python3 -m pytest
 
 cov:
-	pytest --cov=sift --cov-report=term-missing
+	python3 -m pytest --cov=sift --cov-report=term-missing
 
 ci: lint test chapters
 

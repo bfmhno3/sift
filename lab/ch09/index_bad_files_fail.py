@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from sift.__main__ import load_index
+from sift.cli import load_index
 
 MINI = Path("tests/fixtures/mini")
 

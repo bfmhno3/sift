@@ -2,8 +2,8 @@
 
 import math
 
-from sift.__main__ import CORPUS, load_index
 from sift.analysis import build_pipeline
+from sift.cli import CORPUS, load_index
 from sift.scoring import bm25
 from sift.search import Searcher
 
