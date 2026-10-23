@@ -2,11 +2,13 @@
 
 import os
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
 from sqlalchemy import delete, select, update
 
+import sift.storage.db
 from sift.analysis import build_pipeline
 from sift.corpus import iter_documents
 from sift.errors import IndexCorruptError, IndexMissingError, SiftError
@@ -395,3 +397,41 @@ def test_same_corpus_spelled_differently_is_not_rebuilt(
     assert (report.full, report.parsed, report.unchanged) == (False, 0, 8)
     report = update_index(corpus / ".." / "posts", index_dir, NAMES)
     assert report.full is False
+
+
+def test_read_only_database_is_not_renamed(
+    corpus: Path, index_dir: Path
+) -> None:
+    update_index(corpus, index_dir, NAMES)
+    db = index_dir / DB
+    before = db.read_bytes()
+    db.chmod(0o444)
+    try:
+        if os.access(db, os.W_OK):
+            pytest.skip("running as root: chmod 444 does not stop writes")
+        with pytest.raises(SiftError, match="database is read-only"):
+            update_index(corpus, index_dir, NAMES, full=True)
+    finally:
+        db.chmod(0o644)
+    assert db.read_bytes() == before
+    assert not (index_dir / "sift.db.corrupt").exists()
+
+
+def test_locked_database_is_not_renamed(
+    corpus: Path,
+    index_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update_index(corpus, index_dir, NAMES)
+    monkeypatch.setattr(sift.storage.db, "BUSY_TIMEOUT", 0.05)
+    other = sqlite3.connect(index_dir / DB, isolation_level=None)
+    other.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(SiftError, match="database is locked"):
+            update_index(corpus, index_dir, NAMES, full=True)
+    finally:
+        other.execute("ROLLBACK")
+        other.close()
+    assert not (index_dir / "sift.db.corrupt").exists()
+    names, documents = load_documents(index_dir / DB)
+    assert len(documents) == 8

@@ -60,6 +60,7 @@ from sift.document import SHANGHAI, Document
 from sift.errors import IndexCorruptError, SiftError
 
 PIPELINE_KEY = "pipeline"
+BUSY_TIMEOUT = 5.0  # seconds to wait for a lock held by another process
 
 
 class UtcDateTime(TypeDecorator[datetime]):
@@ -175,7 +176,10 @@ def open_db(path: Path) -> sessionmaker[Session]:
     ``maker.kw["bind"].dispose()`` when done; most code should use
     ``session_scope`` instead.
     """
-    engine = create_engine(URL.create("sqlite", database=str(path)))
+    engine = create_engine(
+        URL.create("sqlite", database=str(path)),
+        connect_args={"timeout": BUSY_TIMEOUT},
+    )
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 

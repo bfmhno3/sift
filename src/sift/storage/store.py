@@ -53,6 +53,22 @@ DB = "sift.db"
 MANIFEST = "manifest.json"
 
 
+_BUSY, _READONLY, _CORRUPT, _NOTADB = 5, 8, 11, 26
+
+
+def _is_corrupt(error: DatabaseError) -> bool:
+    """Return True if error says the file is damaged or the wrong schema.
+
+    A locked or read-only database is healthy and must never be
+    treated as corrupt. SQLite reports the cause in sqlite_errorcode
+    (the low byte is the primary code).
+    """
+    code = getattr(error.orig, "sqlite_errorcode", None)
+    if code is not None and code & 0xFF in (_CORRUPT, _NOTADB):
+        return True
+    return str(error.orig).startswith(("no such column", "no such table"))
+
+
 def _write_documents(
     path: Path,
     pipeline: Sequence[str],
@@ -60,7 +76,7 @@ def _write_documents(
     digests: Mapping[int, str],
     drop: set[int] | None,
 ) -> None:
-    """Store the documents; start the database over if it is unusable.
+    """Store the documents; start the database over if it is damaged.
 
     A file that is not a database (a crash, a stray copy) would make
     every later rebuild fail, so on a rebuild it is renamed to
@@ -68,12 +84,21 @@ def _write_documents(
     query log for recovery, and the write is retried once. An
     incremental update never gets here with such a file, because
     load_documents rejected it first.
+
+    A database that is locked by another process or read-only is not
+    damaged: the file is left alone and SiftError is raised.
     """
     fresh = list(fresh)
     try:
         replace_documents(path, pipeline, fresh, digests, drop=drop)
-    except DatabaseError:
-        if drop is not None:
+    except DatabaseError as error:
+        code = getattr(error.orig, "sqlite_errorcode", None)
+        if code is not None and code & 0xFF in (_BUSY, _READONLY):
+            reason = "locked" if code & 0xFF == _BUSY else "read-only"
+            raise SiftError(
+                f"cannot write {path}: database is {reason}"
+            ) from None
+        if drop is not None or not _is_corrupt(error):
             raise
         logger.warning("replacing the unusable database %s", path)
         path.replace(path.with_name(path.name + ".corrupt"))
