@@ -72,7 +72,7 @@ make corpus    # fetch the 123 posts into corpus/ (pinned commit)
 make ch01      # one chapter
 make test      # the pytest suite (python3 -m pytest) (make cov adds coverage)
 make ci        # lint, tests and every chapter
-sift index     # writes .sift/ (segment.sft, docs.json, manifest.json)
+sift index     # writes .sift/ (segment.sft, sift.db, manifest.json)
 sift search --limit 3 rust
 ```
 

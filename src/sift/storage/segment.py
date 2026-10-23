@@ -13,7 +13,7 @@ All numbers are little-endian. The file is laid out as::
 
 doc ids are stable but not dense once files are deleted, so n_docs
 counts slots: ids run from 0 to n_docs - 1 and a deleted id has the
-length 0. The live documents are listed in ``docs.json``, not here.
+length 0. The live documents are listed in ``sift.db``, not here.
 
 The reader maps the file with ``mmap``. It scans the dictionary once
 (about 12 KB per thousand terms: 995 KB for the 81,167 terms of

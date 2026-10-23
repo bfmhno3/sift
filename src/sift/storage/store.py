@@ -1,27 +1,29 @@
 """The index directory: build it, update it, open it.
 
-An index directory holds three files, each replaced atomically::
+An index directory holds three files::
 
     segment.sft    postings and document lengths (see segment.py)
-    docs.json      the analysis pipeline and every live document
+    sift.db        pipeline, documents, query log (see db.py)
     manifest.json  what was indexed (see manifest.py); written last
 
-``update_index`` writes them and ``open_index`` returns a
-``SegmentIndex``, which answers like an ``InvertedIndex`` but reads
-posting lists from the memory-mapped segment when asked.
+The segment and the manifest are replaced atomically; the database
+is updated in one transaction. ``update_index`` writes them and
+``open_index`` returns a ``SegmentIndex``, which answers like an
+``InvertedIndex`` but reads posting lists from the memory-mapped
+segment when asked.
 """
 
-import json
 import logging
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Self
 
+from sqlalchemy.exc import DatabaseError
+
 from sift.analysis import Pipeline, build_pipeline
-from sift.document import SHANGHAI, Document
+from sift.document import Document
 from sift.errors import (
     FrontMatterError,
     IndexCorruptError,
@@ -29,7 +31,7 @@ from sift.errors import (
     SiftError,
 )
 from sift.index import IndexWriter, InvertedIndex, Posting, PostingList
-from sift.storage.atomic import atomic_write
+from sift.storage.db import load_documents, replace_documents
 from sift.storage.manifest import (
     Change,
     Manifest,
@@ -47,64 +49,33 @@ from sift.storage.segment import (
 logger = logging.getLogger(__name__)
 
 SEGMENT = "segment.sft"
-DOCS = "docs.json"
+DB = "sift.db"
 MANIFEST = "manifest.json"
 
 
-def save_docs(
-    path: Path, pipeline: Sequence[str], documents: Mapping[int, Document]
+def _write_documents(
+    path: Path,
+    pipeline: Sequence[str],
+    fresh: Iterable[Document],
+    digests: Mapping[int, str],
+    drop: set[int] | None,
 ) -> None:
-    """Write docs.json atomically: pipeline names and every document."""
-    rows = [
-        {
-            "doc_id": doc.doc_id,
-            "path": str(doc.path),
-            "title": doc.title,
-            "published": doc.published.isoformat(),
-            "updated": doc.updated.isoformat() if doc.updated else None,
-            "tags": list(doc.tags),
-            "category": doc.category,
-            "series": doc.series,
-            "body": doc.body,
-        }
-        for _, doc in sorted(documents.items())
-    ]
-    data = {"pipeline": list(pipeline), "documents": rows}
-    text = json.dumps(data, ensure_ascii=False)
-    atomic_write(path, [text.encode("utf-8")])
+    """Store the documents; start the database over if it is unusable.
 
-
-def _local(text: str) -> datetime:
-    """Parse an ISO 8601 string into Asia/Shanghai time."""
-    return datetime.fromisoformat(text).astimezone(SHANGHAI)
-
-
-def load_docs(path: Path) -> tuple[list[str], dict[int, Document]]:
-    """Read docs.json into ``(pipeline names, documents by doc id)``.
-
-    Raise IndexCorruptError if the file is missing or malformed.
+    A file that is not a database (a crash, a stray copy) would make
+    every later rebuild fail, so on a rebuild it is deleted and the
+    write is retried once. An incremental update never gets here with
+    such a file, because load_documents rejected it first.
     """
+    fresh = list(fresh)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        names = [str(name) for name in data["pipeline"]]
-        documents = {}
-        for row in data["documents"]:
-            updated = row["updated"]
-            doc = Document(
-                doc_id=int(row["doc_id"]),
-                path=Path(row["path"]),
-                title=str(row["title"]),
-                published=_local(row["published"]),
-                updated=None if updated is None else _local(updated),
-                tags=tuple(map(str, row["tags"])),
-                category=row["category"],
-                series=row["series"],
-                body=str(row["body"]),
-            )
-            documents[doc.doc_id] = doc
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise IndexCorruptError(f"{path}: bad docs file: {error!r}") from None
-    return names, documents
+        replace_documents(path, pipeline, fresh, digests, drop=drop)
+    except DatabaseError:
+        if drop is not None:
+            raise
+        logger.warning("replacing the unusable database %s", path)
+        path.unlink()
+        replace_documents(path, pipeline, fresh, digests, drop=None)
 
 
 class SegmentIndex(Mapping[str, PostingList]):
@@ -112,7 +83,7 @@ class SegmentIndex(Mapping[str, PostingList]):
 
     ``index[term]`` decodes the posting list of term the first time
     and caches it. Body postings and document lengths come from the
-    segment, the live documents from docs.json, and the title index is
+    segment, the live documents from sift.db, and the title index is
     rebuilt from the titles (a few hundred tokens) when it is opened.
     """
 
@@ -221,7 +192,7 @@ def open_index(index_dir: Path) -> SegmentIndex:
         raise IndexMissingError(
             f"no index at {index_dir}, run 'sift index' first"
         )
-    names, documents = load_docs(index_dir / DOCS)
+    names, documents = load_documents(index_dir / DB)
     segment = Segment(segment_path)
     try:
         return SegmentIndex(segment, names, documents)
@@ -254,7 +225,7 @@ def _read_old(
     try:
         manifest = load_manifest(index_dir / MANIFEST)
         read_header(index_dir / SEGMENT)
-        old_names, documents = load_docs(index_dir / DOCS)
+        old_names, documents = load_documents(index_dir / DB)
     except IndexMissingError:
         return None
     except IndexCorruptError as error:
@@ -377,7 +348,14 @@ def update_index(
     finally:
         if old is not None:
             old.close()
-    save_docs(index_dir / DOCS, pipeline_names, documents)
+    digests = {e.doc_id: e.sha256 for e in plan.manifest.files.values()}
+    _write_documents(
+        index_dir / DB,
+        pipeline_names,
+        fresh.documents.values(),
+        digests,
+        stale if state else None,
+    )
     save_manifest(index_dir / MANIFEST, plan.manifest)
     return UpdateReport(
         state is None,

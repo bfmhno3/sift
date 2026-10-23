@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -13,6 +14,7 @@ import sift
 import sift.cli as cli
 from sift.document import Document
 from sift.errors import ConfigError
+from sift.storage.db import recent_queries
 
 
 @pytest.fixture(autouse=True)
@@ -75,11 +77,56 @@ def test_search_json(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
     assert data["hits"][0]["title"] == "Fixing a bicycle chain"
 
 
-def test_search_no_log_is_accepted(
-    mini_cli, capsys: pytest.CaptureFixture[str]
+def test_search_no_log_does_not_log(
+    mini_cli, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     mini_cli.main(["search", "--no-log", "chain"])
     assert "hits in 8 files" in capsys.readouterr().out
+    assert recent_queries(tmp_path / "idx" / "sift.db") == []
+
+
+def test_search_logs_the_query(
+    mini_cli, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    mini_cli.main(["search", "chain", "tool"])
+    capsys.readouterr()
+    mini_cli.main(["search", "--json", "zzzzqqqq"])
+    capsys.readouterr()
+    rows = recent_queries(tmp_path / "idx" / "sift.db")
+    assert [(r.query, r.total) for r in rows] == [
+        ("zzzzqqqq", 0),
+        ("chain tool", 1),
+    ]
+    assert all(r.took_ms >= 0 for r in rows)
+    assert all(r.at.utcoffset() == timedelta(0) for r in rows)
+
+
+def test_syntax_error_is_not_logged(mini_cli, tmp_path: Path) -> None:
+    assert run_main("search", '"unclosed') == 3
+    assert recent_queries(tmp_path / "idx" / "sift.db") == []
+
+
+def test_stats_without_queries(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["stats"])
+    assert "no queries logged" in capsys.readouterr().out
+
+
+def test_stats_lists_the_last_ten_queries_newest_first(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for number in range(12):
+        mini_cli.main(["search", f"word{number}"])
+    capsys.readouterr()
+    mini_cli.main(["stats"])
+    out = capsys.readouterr().out
+    assert "last 10 queries:" in out
+    listed = [line for line in out.splitlines() if " UTC " in line]
+    assert [line.split()[-1] for line in listed] == [
+        f"word{n}" for n in range(11, 1, -1)
+    ]
+    assert "     0 hits" in listed[0]
 
 
 def test_search_dash_reads_stdin(
@@ -119,7 +166,7 @@ def test_index_full_then_incremental(
     assert "documents: 8" in out
     assert "full rebuild: parsed 8, unchanged 0, removed 0" in out
     assert (tmp_path / ".sift" / "segment.sft").is_file()
-    assert (tmp_path / ".sift" / "docs.json").is_file()
+    assert (tmp_path / ".sift" / "sift.db").is_file()
     assert (tmp_path / ".sift" / "manifest.json").is_file()
     cli.main(args)
     out = capsys.readouterr().out
@@ -193,7 +240,7 @@ def test_stats_prints_counts_and_top_terms(
     mini_cli.main(["stats"])
     out = capsys.readouterr().out
     assert "segment: " in out
-    assert out.count("\n") == 3 + 20
+    assert out.count("\n") == 3 + 20 + 1  # + "no queries logged"
 
 
 def test_show_prints_the_document(

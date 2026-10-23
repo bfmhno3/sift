@@ -7,7 +7,9 @@ SiftError.
 ``sift index`` writes the index directory (``.sift`` by default, the
 ``[index] path`` of ``sift.toml``) and the other commands read it:
 ``sift search`` maps the segment file instead of rebuilding the index
-in memory. SIFT_INDEX names another index directory.
+in memory, and logs the query in ``sift.db`` unless run with
+``--no-log``; ``sift stats`` lists the last ten logged queries.
+SIFT_INDEX names another index directory.
 """
 
 import argparse
@@ -38,11 +40,11 @@ from sift.log import setup_logging
 from sift.query import parse
 from sift.search import Searcher
 from sift.snippet import render_plain
+from sift.storage.db import load_documents, log_query, recent_queries
 from sift.storage.store import (
-    DOCS,
+    DB,
     SEGMENT,
     SegmentIndex,
-    load_docs,
     open_index,
     update_index,
 )
@@ -140,6 +142,21 @@ def print_stats(index: SegmentIndex) -> None:
         print(f"{count:>7}  {term}")
 
 
+def print_recent_queries(directory: Path, limit: int = 10) -> None:
+    """Print the last limit logged queries, newest first."""
+    rows = recent_queries(directory / DB, limit)
+    if not rows:
+        print("no queries logged")
+        return
+    print(f"last {len(rows)} queries:")
+    for row in rows:
+        stamp = row.at.strftime("%Y-%m-%d %H:%M:%S")
+        print(
+            f"{stamp} UTC  {row.total:>5} hits  "
+            f"{row.took_ms:>8.3f} ms  {row.query}"
+        )
+
+
 def run_index(args: argparse.Namespace) -> None:
     """Build or update the index directory and print what changed."""
     config = load_config()
@@ -161,8 +178,10 @@ def run_index(args: argparse.Namespace) -> None:
 
 def run_stats(args: argparse.Namespace) -> None:
     """Print the stats of the index."""
-    with open_index(index_dir(load_config())) as index:
+    directory = index_dir(load_config())
+    with open_index(directory) as index:
         print_stats(index)
+    print_recent_queries(directory)
 
 
 def read_query(words: list[str]) -> str:
@@ -194,6 +213,8 @@ def run_search(args: argparse.Namespace) -> None:
         opened = time.perf_counter()
         result = searcher.search(query, args.limit or config.limit)
         n_docs = index.n_docs
+    if not args.no_log:
+        log_query(directory / DB, query, result.total, result.took_ms)
     if args.json:
         payload = {
             "query": result.query,
@@ -227,7 +248,7 @@ def find_document(doc_id: int) -> Document:
     """Return the document with doc_id; raise SiftError if none."""
     directory = index_dir(load_config())
     require_index(directory)
-    _, documents = load_docs(directory / DOCS)
+    _, documents = load_documents(directory / DB)
     try:
         return documents[doc_id]
     except KeyError:
@@ -346,7 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument(
         "--no-log",
         action="store_true",
-        help="do not log the query (there is no query log yet)",
+        help="do not log the query in sift.db",
     )
     cmd.set_defaults(func=run_search)
 

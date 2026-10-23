@@ -9,7 +9,9 @@ description = "A local full-text search engine for Markdown posts."
 requires-python = ">=3.14"
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
-dependencies = []
+dependencies = [
+  "sqlalchemy>=2.0.51",
+]
 
 [project.scripts]
 sift = "sift.cli:main"

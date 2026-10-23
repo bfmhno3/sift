@@ -1,22 +1,30 @@
 """Tests for sift.storage.store: update, open and search the index."""
 
-import json
 import os
 import shutil
 from pathlib import Path
 
 import pytest
+from sqlalchemy import delete, select, update
 
 from sift.analysis import build_pipeline
 from sift.corpus import iter_documents
 from sift.errors import IndexCorruptError, IndexMissingError, SiftError
 from sift.index import IndexWriter, InvertedIndex
 from sift.search import Searcher
+from sift.storage.db import (
+    DocumentRow,
+    MetaRow,
+    load_documents,
+    log_query,
+    recent_queries,
+    session_scope,
+)
+from sift.storage.manifest import sha256_file
 from sift.storage.store import (
-    DOCS,
+    DB,
     MANIFEST,
     SEGMENT,
-    load_docs,
     open_index,
     update_index,
 )
@@ -70,9 +78,9 @@ def test_full_build_writes_three_files(corpus: Path, index_dir: Path) -> None:
     assert (report.full, report.parsed, report.unchanged) == (True, 8, 0)
     assert report.documents == 8
     assert sorted(p.name for p in index_dir.iterdir()) == [
-        DOCS,
         MANIFEST,
         SEGMENT,
+        DB,
     ]
     assert report.size == (index_dir / SEGMENT).stat().st_size
 
@@ -243,24 +251,34 @@ def test_open_missing_index(tmp_path: Path) -> None:
         open_index(tmp_path / "nope")
 
 
-def test_open_without_docs_file(corpus: Path, index_dir: Path) -> None:
+def digests(directory: Path) -> dict[int, str]:
+    """Return the sha256 stored for every document row."""
+    with session_scope(directory / DB) as session:
+        rows = session.execute(select(DocumentRow.doc_id, DocumentRow.sha256))
+        return dict(rows.tuples().all())
+
+
+def test_open_without_database(corpus: Path, index_dir: Path) -> None:
     update_index(corpus, index_dir, NAMES)
-    (index_dir / DOCS).unlink()
-    with pytest.raises(IndexCorruptError, match="docs"):
+    (index_dir / DB).unlink()
+    with pytest.raises(IndexCorruptError, match="sift.db"):
         open_index(index_dir)
 
 
-def test_docs_file_roundtrip(corpus: Path, index_dir: Path) -> None:
+def test_database_roundtrip(corpus: Path, index_dir: Path) -> None:
     update_index(corpus, index_dir, NAMES)
-    names, documents = load_docs(index_dir / DOCS)
+    names, documents = load_documents(index_dir / DB)
     assert names == list(NAMES)
     assert list(documents.values()) == list(iter_documents(corpus))
 
 
-def test_malformed_docs_file(corpus: Path, index_dir: Path) -> None:
+def test_database_without_pipeline_is_corrupt(
+    corpus: Path, index_dir: Path
+) -> None:
     update_index(corpus, index_dir, NAMES)
-    (index_dir / DOCS).write_text(json.dumps({"pipeline": []}))
-    with pytest.raises(IndexCorruptError):
+    with session_scope(index_dir / DB) as session:
+        session.execute(delete(MetaRow))
+    with pytest.raises(IndexCorruptError, match="no pipeline"):
         open_index(index_dir)
 
 
@@ -268,11 +286,64 @@ def test_doc_without_length_slot_is_corrupt(
     corpus: Path, index_dir: Path
 ) -> None:
     update_index(corpus, index_dir, NAMES)
-    data = json.loads((index_dir / DOCS).read_text())
-    data["documents"][0]["doc_id"] = 99
-    (index_dir / DOCS).write_text(json.dumps(data))
+    with session_scope(index_dir / DB) as session:
+        session.execute(
+            update(DocumentRow)
+            .where(DocumentRow.doc_id == 0)
+            .values(doc_id=99)
+        )
     with pytest.raises(IndexCorruptError, match="length slot"):
         open_index(index_dir)
+
+
+def test_garbage_database_is_replaced_on_rebuild(
+    corpus: Path, index_dir: Path
+) -> None:
+    update_index(corpus, index_dir, NAMES)
+    (index_dir / DB).write_bytes(b"this is not a database" * 100)
+    with pytest.raises(IndexCorruptError):
+        open_index(index_dir)
+    report = update_index(corpus, index_dir, NAMES)
+    assert (report.full, report.parsed) == (True, 8)
+    open_index(index_dir).close()
+
+
+def test_rebuild_keeps_the_query_log(corpus: Path, index_dir: Path) -> None:
+    update_index(corpus, index_dir, NAMES)
+    log_query(index_dir / DB, "chain", 1, 0.5)
+    update_index(corpus, index_dir, NAMES, full=True)
+    assert [r.query for r in recent_queries(index_dir / DB)] == ["chain"]
+
+
+def test_incremental_update_rewrites_only_the_changed_rows(
+    corpus: Path, index_dir: Path
+) -> None:
+    update_index(corpus, index_dir, NAMES)
+    before = digests(index_dir)
+    edit(corpus / "river-flow.md", "\nzymurgy zymurgy\n")
+    (corpus / "tea-brewing.md").unlink()
+    update_index(corpus, index_dir, NAMES)
+    after = digests(index_dir)
+    assert after.keys() == before.keys() - {6}
+    changed = {i for i in after if after[i] != before[i]}
+    assert len(changed) == 1
+    _, documents = load_documents(index_dir / DB)
+    (edited,) = [d for d in documents.values() if "river-flow" in str(d.path)]
+    assert "zymurgy zymurgy" in edited.body
+    assert after[edited.doc_id] == sha256_file(corpus / "river-flow.md")
+
+
+def test_database_equals_a_full_build_after_updates(
+    corpus: Path, index_dir: Path, tmp_path: Path
+) -> None:
+    update_index(corpus, index_dir, NAMES)
+    edit(corpus / "river-flow.md", "\nzymurgy\n")
+    edit(corpus / "tea-brewing.md", "\nquux\n")
+    update_index(corpus, index_dir, NAMES)
+    fresh = tmp_path / "fresh"
+    update_index(corpus, fresh, NAMES, full=True)
+    assert load_documents(index_dir / DB) == load_documents(fresh / DB)
+    assert digests(index_dir) == digests(fresh)
 
 
 def test_no_temp_files_are_left_behind(corpus: Path, index_dir: Path) -> None:
