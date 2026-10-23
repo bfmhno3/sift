@@ -306,6 +306,17 @@ def test_garbage_database_is_replaced_on_rebuild(
     report = update_index(corpus, index_dir, NAMES)
     assert (report.full, report.parsed) == (True, 8)
     open_index(index_dir).close()
+    corrupt = index_dir / "sift.db.corrupt"
+    assert corrupt.read_bytes().startswith(b"this is not")
+
+
+def test_older_corrupt_file_is_replaced(corpus: Path, index_dir: Path) -> None:
+    update_index(corpus, index_dir, NAMES)
+    corrupt = index_dir / "sift.db.corrupt"
+    corrupt.write_bytes(b"old")
+    (index_dir / DB).write_bytes(b"newer garbage" * 100)
+    update_index(corpus, index_dir, NAMES)
+    assert corrupt.read_bytes().startswith(b"newer garbage")
 
 
 def test_rebuild_keeps_the_query_log(corpus: Path, index_dir: Path) -> None:

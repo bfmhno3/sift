@@ -15,6 +15,7 @@ from sift.storage.db import (
     DocumentRow,
     MetaRow,
     QueryLogRow,
+    load_document,
     load_documents,
     log_query,
     open_db,
@@ -231,3 +232,18 @@ def test_hostile_document_fields_are_data(db: Path) -> None:
         ).all()
         assert len(found) == 1
         assert session.get(MetaRow, "pipeline") is not None
+
+
+def test_load_document_reads_one_row(db: Path) -> None:
+    docs = [make_doc(i) for i in range(3)]
+    replace_documents(db, NAMES, docs, dict.fromkeys(range(3), SHA))
+    assert load_document(db, 1) == docs[1]
+    assert load_document(db, 9) is None
+
+
+def test_load_document_of_a_bad_database(db: Path, tmp_path: Path) -> None:
+    with pytest.raises(IndexCorruptError, match="missing"):
+        load_document(tmp_path / "nope.db", 0)
+    db.write_bytes(b"not sqlite at all" * 50)
+    with pytest.raises(IndexCorruptError, match="bad database"):
+        load_document(db, 0)

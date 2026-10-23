@@ -63,9 +63,11 @@ def _write_documents(
     """Store the documents; start the database over if it is unusable.
 
     A file that is not a database (a crash, a stray copy) would make
-    every later rebuild fail, so on a rebuild it is deleted and the
-    write is retried once. An incremental update never gets here with
-    such a file, because load_documents rejected it first.
+    every later rebuild fail, so on a rebuild it is renamed to
+    ``sift.db.corrupt`` (replacing an older one), which keeps the
+    query log for recovery, and the write is retried once. An
+    incremental update never gets here with such a file, because
+    load_documents rejected it first.
     """
     fresh = list(fresh)
     try:
@@ -74,7 +76,7 @@ def _write_documents(
         if drop is not None:
             raise
         logger.warning("replacing the unusable database %s", path)
-        path.unlink()
+        path.replace(path.with_name(path.name + ".corrupt"))
         replace_documents(path, pipeline, fresh, digests, drop=None)
 
 

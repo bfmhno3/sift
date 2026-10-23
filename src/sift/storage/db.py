@@ -244,6 +244,22 @@ def load_documents(path: Path) -> tuple[list[str], dict[int, Document]]:
     return names, documents
 
 
+def load_document(path: Path, doc_id: int) -> Document | None:
+    """Return the document with doc_id, or None if there is none.
+
+    Only that row is read. Raise IndexCorruptError like
+    load_documents.
+    """
+    if not path.is_file():
+        raise IndexCorruptError(f"{path}: bad database: file is missing")
+    try:
+        with session_scope(path) as session:
+            row = session.get(DocumentRow, doc_id)
+            return None if row is None else row.to_document()
+    except (SQLAlchemyError, ValueError, TypeError) as error:
+        raise IndexCorruptError(f"{path}: bad database: {error}") from None
+
+
 def log_query(path: Path, query: str, total: int, took_ms: float) -> None:
     """Append one row to the query log, stamped with the current time.
 

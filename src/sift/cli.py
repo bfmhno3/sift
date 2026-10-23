@@ -40,7 +40,7 @@ from sift.log import setup_logging
 from sift.query import parse
 from sift.search import Searcher
 from sift.snippet import render_plain
-from sift.storage.db import load_documents, log_query, recent_queries
+from sift.storage.db import load_document, log_query, recent_queries
 from sift.storage.store import (
     DB,
     SEGMENT,
@@ -214,7 +214,15 @@ def run_search(args: argparse.Namespace) -> None:
         result = searcher.search(query, args.limit or config.limit)
         n_docs = index.n_docs
     if not args.no_log:
-        log_query(directory / DB, query, result.total, result.took_ms)
+        try:
+            log_query(directory / DB, query, result.total, result.took_ms)
+        except SiftError:
+            # the error text can hold the query: say only where
+            print(
+                f"sift: warning: query not logged, cannot write "
+                f"{directory / DB}",
+                file=sys.stderr,
+            )
     if args.json:
         payload = {
             "query": result.query,
@@ -248,11 +256,10 @@ def find_document(doc_id: int) -> Document:
     """Return the document with doc_id; raise SiftError if none."""
     directory = index_dir(load_config())
     require_index(directory)
-    _, documents = load_documents(directory / DB)
-    try:
-        return documents[doc_id]
-    except KeyError:
-        raise SiftError(f"no document with id {doc_id}") from None
+    doc = load_document(directory / DB, doc_id)
+    if doc is None:
+        raise SiftError(f"no document with id {doc_id}")
+    return doc
 
 
 def run_show(args: argparse.Namespace) -> None:

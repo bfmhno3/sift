@@ -1,7 +1,9 @@
 """The N+1 query problem: lazy loading against eager loading."""
 
+from typing import Any
+
 import sqlalchemy as sa
-from sqlalchemy import ForeignKey, Table, event, select
+from sqlalchemy import ForeignKey, Table, event, func, select
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -58,14 +60,21 @@ def fill(engine: sa.Engine) -> int:
             ]
             session.add(PostRow(id=doc.doc_id, title=doc.title, tags=row_tags))
         session.commit()
-        return session.query(PostRow).count()
+        return session.scalar(select(func.count()).select_from(PostRow))
 
 
 def count_statements(engine: sa.Engine, load: object | None) -> list[str]:
     """Return the SQL of every statement run while listing all tags."""
     statements: list[str] = []
 
-    def record(conn, cursor, statement, parameters, context, many):
+    def record(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        many: bool,
+    ) -> None:
         statements.append(statement)
 
     event.listen(engine, "before_cursor_execute", record)

@@ -13,7 +13,7 @@ import pytest
 import sift
 import sift.cli as cli
 from sift.document import Document
-from sift.errors import ConfigError
+from sift.errors import ConfigError, SiftError
 from sift.storage.db import recent_queries
 
 
@@ -462,3 +462,47 @@ def test_bench_index_with_missing_corpus_exits_1(
     monkeypatch.chdir(tmp_path)
     assert run_main("bench", "index") == 1
     assert "error: no corpus at corpus/posts" in capsys.readouterr().err
+
+
+def test_unwritable_log_does_not_fail_the_search(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def broken(*args: object) -> None:
+        raise SiftError("cannot log the query: secret-query-text")
+
+    monkeypatch.setattr(cli, "log_query", broken)
+    mini_cli.main(["search", "chain"])
+    captured = capsys.readouterr()
+    assert "1 hits" in captured.out
+    assert captured.err.count("\n") == 1
+    assert "warning: query not logged" in captured.err
+    assert "secret" not in captured.err
+
+
+def test_read_only_database_does_not_fail_the_search(
+    mini_cli, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    db = tmp_path / "idx" / "sift.db"
+    db.chmod(0o444)
+    try:
+        mini_cli.main(["search", "chain"])
+    finally:
+        db.chmod(0o644)
+    captured = capsys.readouterr()
+    assert "1 hits" in captured.out
+    assert "query not logged" in captured.err
+
+
+def test_show_reads_one_document(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def forbidden(*args: object) -> None:
+        raise AssertionError("show must not load every document")
+
+    monkeypatch.setattr(cli, "load_documents", forbidden, raising=False)
+    mini_cli.main(["show", "0"])
+    assert "title: " in capsys.readouterr().out

@@ -20,8 +20,11 @@ def make_db() -> sqlite3.Connection:
 
 
 def formatted(conn: sqlite3.Connection, owner: str) -> list[tuple]:
-    """BAD: build the query with an f-string."""
-    sql = f"SELECT body FROM notes WHERE owner = '{owner}' AND kind = 'public'"
+    """Build the query with an f-string, the way not to."""
+    sql = (
+        f"SELECT body FROM notes WHERE owner = '{owner}' "  # BAD
+        "AND kind = 'public'"
+    )
     print("   sql:", sql)
     return conn.execute(sql).fetchall()
 
