@@ -15,7 +15,7 @@ echo "top 15 imports by cumulative time (us):" \
 grep '|' out/ch11/importtime.raw \
     | grep -v 'cumulative' \
     | sort -t'|' -k2 -n -r \
-    | head -15 \
+    | sed -n 1,15p \
     | tee -a out/ch11/import_trace.txt
 echo "sift modules only:" | tee -a out/ch11/import_trace.txt
 grep -E '\| +sift(\.| *$)' out/ch11/importtime.raw \
@@ -33,7 +33,7 @@ report() {
     shift
     "$@" > out/ch11/last.stdout 2> out/ch11/last.stderr || status=$?
     printf '%-52s -> %s (expected %s)\n' "$*" "$status" "$expect"
-    sed 's/^/    stderr: /' out/ch11/last.stderr | head -3
+    sed 's/^/    stderr: /' out/ch11/last.stderr | sed -n 1,3p
     [ "$status" -eq "$expect" ]
 }
 {
