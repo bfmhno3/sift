@@ -4,12 +4,10 @@ Exit codes: 0 ok (also when a query has no hits), 2 usage error
 (argparse), 3 malformed query, 4 index missing, 1 any other
 SiftError.
 
-SIFT_INDEX names the directory of the persisted index. The index is
-only persisted from chapter 12, so for now the variable has one
-effect: when it is set, the commands that read the index (search,
-show, stats, open) fail with exit code 4 unless that directory
-exists. When it is not set they build the index in memory, as
-before.
+``sift index`` writes the index directory (``.sift`` by default, the
+``[index] path`` of ``sift.toml``) and the other commands read it:
+``sift search`` maps the segment file instead of rebuilding the index
+in memory. SIFT_INDEX names another index directory.
 """
 
 import argparse
@@ -19,6 +17,7 @@ import shlex
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Sequence
@@ -26,6 +25,7 @@ from pathlib import Path
 
 from sift import __version__
 from sift.analysis import Pipeline, build_pipeline
+from sift.config import Config, load_config
 from sift.corpus import iter_documents
 from sift.document import Document
 from sift.errors import (
@@ -38,6 +38,14 @@ from sift.log import setup_logging
 from sift.query import parse
 from sift.search import Searcher
 from sift.snippet import render_plain
+from sift.storage.store import (
+    DOCS,
+    SEGMENT,
+    SegmentIndex,
+    load_docs,
+    open_index,
+    update_index,
+)
 from sift.util import timed
 
 CORPUS = Path("corpus/posts")
@@ -77,21 +85,18 @@ def load_index(
     return documents, index
 
 
-def index_dir() -> Path | None:
-    """Return the directory named by SIFT_INDEX, or None if unset."""
+def index_dir(config: Config) -> Path:
+    """Return the index directory: SIFT_INDEX, else the config path."""
     value = os.environ.get("SIFT_INDEX")
-    return Path(value) if value else None
+    return Path(value) if value else config.index_path
 
 
-def check_index_dir() -> None:
-    """Raise IndexMissingError if SIFT_INDEX names a missing directory.
-
-    With SIFT_INDEX unset there is nothing to check: until chapter 12
-    the index lives in memory and is built on demand.
-    """
-    path = index_dir()
-    if path is not None and not path.is_dir():
-        raise IndexMissingError(f"no index at {path}, run 'sift index' first")
+def require_index(directory: Path) -> None:
+    """Raise IndexMissingError if directory holds no segment."""
+    if not (directory / SEGMENT).is_file():
+        raise IndexMissingError(
+            f"no index at {directory}, run 'sift index' first"
+        )
 
 
 def positive_int(text: str) -> int:
@@ -120,33 +125,44 @@ def doc_id_arg(text: str) -> int:
     return number
 
 
-def print_stats(documents: list[Document], index: InvertedIndex) -> None:
-    """Print document count, vocabulary size and the 20 top terms."""
-    totals = Counter({term: sum(p.tf for p in index[term]) for term in index})
-    print(f"documents: {len(documents)}")
+def print_stats(index: SegmentIndex) -> None:
+    """Print document count, vocabulary size, size and 20 top terms."""
+    totals = Counter(
+        {
+            term: sum(p.tf for p in plist)
+            for term, plist in index.segment.iter_postings()
+        }
+    )
+    print(f"documents: {index.n_docs}")
     print(f"vocabulary: {len(index)}")
+    print(f"segment: {index.segment.size} bytes")
     for term, count in totals.most_common(20):
         print(f"{count:>7}  {term}")
 
 
-def report(root: Path) -> None:
-    """Build the index of root in memory and print its stats."""
-    start = time.perf_counter()
-    documents, index = load_index(root, build_pipeline())
-    built = time.perf_counter()
-    print_stats(documents, index)
-    print(f"index built in {(built - start) * 1000:.1f} ms")
-
-
 def run_index(args: argparse.Namespace) -> None:
-    """Build the index and print its stats."""
-    report(args.corpus)
+    """Build or update the index directory and print what changed."""
+    config = load_config()
+    corpus = args.corpus or config.corpus
+    start = time.perf_counter()
+    report = update_index(
+        corpus, index_dir(config), config.pipeline, full=args.full
+    )
+    took = (time.perf_counter() - start) * 1000
+    mode = "full rebuild" if report.full else "incremental"
+    print(f"documents: {report.documents}")
+    print(f"vocabulary: {report.terms}")
+    print(
+        f"{mode}: parsed {report.parsed}, unchanged {report.unchanged}, "
+        f"removed {report.removed}; segment {report.size} bytes; "
+        f"took {took:.1f} ms"
+    )
 
 
 def run_stats(args: argparse.Namespace) -> None:
     """Print the stats of the index."""
-    check_index_dir()
-    report(CORPUS)
+    with open_index(index_dir(load_config())) as index:
+        print_stats(index)
 
 
 def read_query(words: list[str]) -> str:
@@ -162,15 +178,22 @@ def read_query(words: list[str]) -> str:
 
 def run_search(args: argparse.Namespace) -> None:
     """Print the best documents for the query."""
-    check_index_dir()
+    config = load_config()
+    directory = index_dir(config)
+    require_index(directory)
     query = read_query(args.query)
-    parse(query)  # fail fast: a typo must not cost an index build
+    parse(query)  # fail fast: a typo must not cost an index open
     start = time.perf_counter()
-    pipeline = build_pipeline()
-    documents, index = load_index(CORPUS, pipeline)
-    searcher = Searcher(index, pipeline=pipeline)
-    built = time.perf_counter()
-    result = searcher.search(query, args.limit)
+    with open_index(directory) as index:
+        searcher = Searcher(
+            index,
+            k1=config.k1,
+            b=config.b,
+            pipeline=build_pipeline(index.pipeline_names),
+        )
+        opened = time.perf_counter()
+        result = searcher.search(query, args.limit or config.limit)
+        n_docs = index.n_docs
     if args.json:
         payload = {
             "query": result.query,
@@ -194,20 +217,21 @@ def run_search(args: argparse.Namespace) -> None:
         print(f"    {hit.title}")
         print(f"    {render_plain(hit.snippet)}")
     print(
-        f"{result.total} hits in {len(documents)} files: "
-        f"index built in {(built - start) * 1000:.1f} ms, "
+        f"{result.total} hits in {n_docs} files: "
+        f"index opened in {(opened - start) * 1000:.1f} ms, "
         f"query took {result.took_ms:.3f} ms"
     )
 
 
 def find_document(doc_id: int) -> Document:
     """Return the document with doc_id; raise SiftError if none."""
-    check_index_dir()
-    check_corpus(CORPUS)
-    for doc in iter_documents(CORPUS):
-        if doc.doc_id == doc_id:
-            return doc
-    raise SiftError(f"no document with id {doc_id}")
+    directory = index_dir(load_config())
+    require_index(directory)
+    _, documents = load_docs(directory / DOCS)
+    try:
+        return documents[doc_id]
+    except KeyError:
+        raise SiftError(f"no document with id {doc_id}") from None
 
 
 def run_show(args: argparse.Namespace) -> None:
@@ -236,12 +260,14 @@ def run_open(args: argparse.Namespace) -> None:
 
 
 def run_bench_index(args: argparse.Namespace) -> None:
-    """Time args.repeat in-memory index builds."""
+    """Time args.repeat full index builds into a temporary directory."""
+    config = load_config()
     seconds = []
-    for _ in range(args.repeat):
-        start = time.perf_counter()
-        load_index(CORPUS, build_pipeline())
-        seconds.append(time.perf_counter() - start)
+    with tempfile.TemporaryDirectory(prefix="sift-bench-") as tmp:
+        for _ in range(args.repeat):
+            start = time.perf_counter()
+            update_index(config.corpus, Path(tmp), config.pipeline, full=True)
+            seconds.append(time.perf_counter() - start)
     print(
         f"{args.repeat} builds: "
         f"min {min(seconds) * 1000:.1f} ms, "
@@ -250,16 +276,24 @@ def run_bench_index(args: argparse.Namespace) -> None:
 
 
 def run_bench_search(args: argparse.Namespace) -> None:
-    """Run bench/queries.txt: build the index once, time each query."""
-    pipeline = build_pipeline()
-    _, index = load_index(CORPUS, pipeline)
-    searcher = Searcher(index, pipeline=pipeline)
+    """Run bench/queries.txt: open the index once, time each query."""
+    config = load_config()
+    directory = index_dir(config)
+    require_index(directory)
     queries = QUERIES.read_text(encoding="utf-8").splitlines()
     timings = []
-    for query in filter(None, queries):
-        start = time.perf_counter()
-        result = searcher.search(query)
-        timings.append((query, result.total, time.perf_counter() - start))
+    with open_index(directory) as index:
+        searcher = Searcher(
+            index,
+            k1=config.k1,
+            b=config.b,
+            pipeline=build_pipeline(index.pipeline_names),
+        )
+        for query in filter(None, queries):
+            start = time.perf_counter()
+            result = searcher.search(query, config.limit)
+            elapsed = time.perf_counter() - start
+            timings.append((query, result.total, elapsed))
     total = sum(seconds for _, _, seconds in timings)
     for query, hits, seconds in timings:
         print(f"{seconds * 1000:8.2f} ms  {hits:>4} hits  {query}")
@@ -283,13 +317,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     cmd = commands.add_parser(
-        "index", help="build the index and print its stats"
+        "index", help="build or update the index and print its stats"
     )
     cmd.add_argument(
         "--corpus",
         type=Path,
-        default=CORPUS,
-        help="directory of Markdown posts (default: %(default)s)",
+        default=None,
+        help="directory of Markdown posts (default: [index] corpus)",
+    )
+    cmd.add_argument(
+        "--full",
+        action="store_true",
+        help="rebuild from scratch instead of updating",
     )
     cmd.set_defaults(func=run_index)
 
@@ -300,8 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument(
         "--limit",
         type=positive_int,
-        default=10,
-        help="most hits to print (default: %(default)s)",
+        default=None,
+        help="most hits to print (default: [search] limit of sift.toml)",
     )
     cmd.add_argument("--json", action="store_true", help="print JSON")
     cmd.add_argument(
@@ -326,7 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
     kinds = cmd.add_subparsers(
         title="benchmarks", dest="kind", metavar="KIND", required=True
     )
-    sub = kinds.add_parser("index", help="time in-memory index builds")
+    sub = kinds.add_parser("index", help="time full index builds")
     sub.add_argument(
         "--repeat",
         type=positive_int,

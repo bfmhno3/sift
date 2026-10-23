@@ -42,6 +42,7 @@ The posts live at <https://bfmhno3.github.io>.
 
 ```text
 pyproject.toml       package metadata (hatchling), pytest settings, the `sift` script
+sift.toml            settings: corpus, index directory, analysis pipeline, BM25
 src/sift/            the package
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
@@ -49,6 +50,7 @@ lab/chNN/            one directory of small lab files per chapter
 bench/queries.txt    the queries used by every benchmark
 scripts/             chapter runner and corpus fetcher
 corpus/              the blog posts, fetched by `make corpus` (not committed)
+.sift/               the index written by `sift index` (not committed)
 out/                 outputs of the lab files (not committed)
 ```
 
@@ -70,6 +72,7 @@ make corpus    # fetch the 123 posts into corpus/ (pinned commit)
 make ch01      # one chapter
 make test      # the pytest suite (python3 -m pytest) (make cov adds coverage)
 make ci        # lint, tests and every chapter
+sift index     # writes .sift/ (segment.sft, docs.json, manifest.json)
 sift search --limit 3 rust
 ```
 

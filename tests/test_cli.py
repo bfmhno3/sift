@@ -11,6 +11,7 @@ import pytest
 
 import sift
 import sift.cli as cli
+from sift.document import Document
 from sift.errors import ConfigError
 
 
@@ -21,9 +22,16 @@ def no_sift_index(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def mini_cli(monkeypatch: pytest.MonkeyPatch, mini_root: Path) -> ModuleType:
-    """Point the CLI at the fixture posts instead of corpus/posts."""
-    monkeypatch.setattr(cli, "CORPUS", mini_root)
+def mini_cli(
+    monkeypatch: pytest.MonkeyPatch, mini_root: Path, tmp_path: Path
+) -> ModuleType:
+    """Work in a temp dir with a sift.toml and an index of the mini posts."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sift.toml").write_text(
+        f'[index]\ncorpus = "{mini_root}"\npath = "{tmp_path / "idx"}"\n',
+        encoding="utf-8",
+    )
+    cli.main(["index"])
     return cli
 
 
@@ -43,7 +51,7 @@ def test_search_prints_ranked_hits(
     assert "bicycle-repair.md" in out
     assert "Fixing a bicycle chain" in out
     assert "[chain]" in out.lower()
-    assert "1 hits in 8 files" in out
+    assert "1 hits in 8 files: index opened in" in out
 
 
 def test_search_words_are_joined_into_one_query(
@@ -54,7 +62,7 @@ def test_search_words_are_joined_into_one_query(
 
 
 def test_search_limit(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
-    mini_cli.main(["search", "--limit", "1", "the", "OR", "a"])
+    mini_cli.main(["search", "--limit", "1", "tea", "OR", "bicycle"])
     out = capsys.readouterr().out
     assert out.count(".md") == 1
 
@@ -98,13 +106,92 @@ def test_stats(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
     assert "vocabulary: " in out
 
 
-def test_index_prints_stats(
-    mini_root: Path, capsys: pytest.CaptureFixture[str]
+def test_index_full_then_incremental(
+    mini_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cli.main(["index", "--corpus", str(mini_root)])
+    monkeypatch.chdir(tmp_path)
+    args = ["index", "--corpus", str(mini_root)]
+    cli.main(args)
     out = capsys.readouterr().out
     assert "documents: 8" in out
-    assert "index built in" in out
+    assert "full rebuild: parsed 8, unchanged 0, removed 0" in out
+    assert (tmp_path / ".sift" / "segment.sft").is_file()
+    assert (tmp_path / ".sift" / "docs.json").is_file()
+    assert (tmp_path / ".sift" / "manifest.json").is_file()
+    cli.main(args)
+    out = capsys.readouterr().out
+    assert "incremental: parsed 0, unchanged 8, removed 0" in out
+    cli.main([*args, "--full"])
+    assert "full rebuild: parsed 8" in capsys.readouterr().out
+
+
+def test_sift_index_env_selects_the_directory(
+    mini_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "elsewhere"
+    monkeypatch.setenv("SIFT_INDEX", str(target))
+    cli.main(["index", "--corpus", str(mini_root)])
+    assert (target / "segment.sft").is_file()
+    assert not (tmp_path / ".sift").exists()
+    cli.main(["search", "chain"])
+
+
+def test_search_reads_the_segment_not_the_corpus(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        Document,
+        "from_markdown",
+        lambda *a, **k: pytest.fail("a post was parsed"),
+    )
+    (tmp_path / "sift.toml").unlink()
+    monkeypatch.setenv("SIFT_INDEX", str(tmp_path / "idx"))
+    mini_cli.main(["search", "chain"])
+    assert "bicycle-repair.md" in capsys.readouterr().out
+
+
+def test_search_uses_the_limit_of_the_config(
+    mini_cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "sift.toml"
+    config.write_text(config.read_text() + "[search]\nlimit = 1\n")
+    mini_cli.main(["search", "tea", "OR", "bicycle"])
+    assert capsys.readouterr().out.count(".md") == 1
+
+
+def test_bad_config_exits_1(
+    mini_cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "sift.toml").write_text("[search]\nlimit = 0\n")
+    assert run_main("search", "chain") == 1
+    assert capsys.readouterr().err.startswith("error: [search] limit")
+
+
+def test_corrupt_segment_exits_1(
+    mini_cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    segment = tmp_path / "idx" / "segment.sft"
+    segment.write_bytes(b"NOPE" + segment.read_bytes()[4:])
+    assert run_main("search", "chain") == 1
+    assert "bad magic" in capsys.readouterr().err
+
+
+def test_stats_prints_counts_and_top_terms(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["stats"])
+    out = capsys.readouterr().out
+    assert "segment: " in out
+    assert out.count("\n") == 3 + 20
 
 
 def test_show_prints_the_document(
@@ -195,7 +282,7 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_query_syntax_error_exits_3_with_a_caret(
-    monkeypatch: pytest.MonkeyPatch,
+    mini_cli,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert run_main("search", "a AND") == 3
@@ -225,15 +312,23 @@ def test_search_with_missing_index_dir_exits_4(
     assert run_main("search", "rust") == 4
 
 
-def test_existing_index_dir_still_searches_in_memory(
-    mini_cli,
+def test_index_dir_without_a_segment_exits_4(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SIFT_INDEX", str(tmp_path))
+    assert run_main("search", "chain") == 4
+
+
+def test_default_index_dir_is_dot_sift(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("SIFT_INDEX", str(tmp_path))
-    mini_cli.main(["search", "chain"])
-    assert "hits in 8 files" in capsys.readouterr().out
+    monkeypatch.chdir(tmp_path)
+    assert run_main("search", "chain") == 4
+    err = capsys.readouterr().err
+    assert err == "sift: no index at .sift, run 'sift index' first\n"
 
 
 def test_sift_error_exits_1(
@@ -297,20 +392,24 @@ def test_keyboard_interrupt_exits_130_quietly(
     assert "Traceback" not in err
 
 
-@pytest.mark.parametrize(
-    "command", ["search rust", "stats", "show 0", "index"]
-)
-def test_missing_corpus_exits_1(
+def test_index_with_missing_corpus_exits_1(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
-    command: str,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     missing = tmp_path / "posts"
-    monkeypatch.setattr(cli, "CORPUS", missing)
-    args = command.split()
-    if args[0] == "index":
-        args += ["--corpus", str(missing)]
-    assert run_main(*args) == 1
+    assert run_main("index", "--corpus", str(missing)) == 1
     err = capsys.readouterr().err
-    assert err.endswith(f"error: no corpus at {missing}\n")
+    assert err == f"error: no corpus at {missing}\n"
+    assert not (tmp_path / ".sift" / "segment.sft").exists()
+
+
+def test_bench_index_with_missing_corpus_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert run_main("bench", "index") == 1
+    assert "error: no corpus at corpus/posts" in capsys.readouterr().err

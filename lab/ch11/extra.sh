@@ -5,6 +5,12 @@ set -euo pipefail
 
 mkdir -p out/ch11
 
+# 从 ch12 起 search/show/stats 读磁盘上的索引：建在临时目录里。
+SIFT_INDEX=$(mktemp -d)
+export SIFT_INDEX
+trap 'rm -rf "$SIFT_INDEX"' EXIT
+sift index > /dev/null
+
 # --- import_trace.sh: what `import sift.search` pulls in -------------
 # Format of -X importtime: self [us] | cumulative [us] | module name,
 # children indented under their importer. Sort by cumulative time.

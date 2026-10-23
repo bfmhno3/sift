@@ -1,0 +1,11 @@
+[index]
+corpus = "corpus/posts"
+path = ".sift"
+
+[analysis]
+pipeline = ["mixed", "nfkc", "stopwords"]
+
+[search]
+k1 = 1.2
+b = 0.75
+limit = 10
