@@ -173,7 +173,9 @@ def test_bad_config_exits_1(
 ) -> None:
     (tmp_path / "sift.toml").write_text("[search]\nlimit = 0\n")
     assert run_main("search", "chain") == 1
-    assert capsys.readouterr().err.startswith("error: [search] limit")
+    assert capsys.readouterr().err.startswith(
+        "error: sift.toml: [search] limit"
+    )
 
 
 def test_corrupt_segment_exits_1(

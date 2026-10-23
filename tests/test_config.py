@@ -98,3 +98,12 @@ def test_toml_syntax_error(tmp_path: Path) -> None:
 def test_invalid_settings(tmp_path: Path, text: str, message: str) -> None:
     with pytest.raises(ConfigError, match=message):
         load_config(write(tmp_path, text))
+
+
+def test_errors_name_the_file(tmp_path: Path) -> None:
+    path = write(tmp_path, "[search]\nlimt = 3\n")
+    with pytest.raises(ConfigError, match=r"sift\.toml: unknown key"):
+        load_config(path)
+    path = write(tmp_path, "[search]\nlimit = 0\n")
+    with pytest.raises(ConfigError, match=r"sift\.toml: \[search\] limit"):
+        load_config(path)

@@ -302,3 +302,14 @@ def test_incremental_segment_is_byte_identical_to_a_full_build(
     fresh = tmp_path / "fresh"
     update_index(corpus, fresh, NAMES, full=True)
     assert (index_dir / SEGMENT).read_bytes() == (fresh / SEGMENT).read_bytes()
+
+
+def test_same_corpus_spelled_differently_is_not_rebuilt(
+    corpus: Path, index_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    update_index(corpus.resolve(), index_dir, NAMES)
+    monkeypatch.chdir(corpus.parent)
+    report = update_index(Path("posts"), index_dir, NAMES)
+    assert (report.full, report.parsed, report.unchanged) == (False, 0, 8)
+    report = update_index(corpus / ".." / "posts", index_dir, NAMES)
+    assert report.full is False
