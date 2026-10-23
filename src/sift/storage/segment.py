@@ -16,8 +16,9 @@ counts slots: ids run from 0 to n_docs - 1 and a deleted id has the
 length 0. The live documents are listed in ``docs.json``, not here.
 
 The reader maps the file with ``mmap``. It scans the dictionary once
-(a few hundred bytes per thousand terms) and bisects the sorted terms;
-a posting list is decoded only when a query asks for it.
+(about 12 KB per thousand terms: 995 KB for the 81,167 terms of
+the corpus) and bisects the sorted terms; a posting list is decoded
+only when a query asks for it.
 """
 
 import bisect

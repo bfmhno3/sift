@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # incremental_index.sh: what `sift index` reparses after a change.
-# index_timing.py and search_latency.py: the numbers of the chapter.
+# Then two timing sections (python3 heredocs): cold vs incremental
+# `sift index`, and `sift search` on the mmap segment vs a rebuild.
 # Everything runs on a copy of the corpus and an index in a temp dir.
 set -euo pipefail
 
@@ -121,7 +122,10 @@ for _ in range(ROUNDS):
         start = time.perf_counter()
         subprocess.run(argv, check=True, capture_output=True)
         times[name].append((time.perf_counter() - start) * 1000)
-print(f"query {query!r}: wall clock of one process, {ROUNDS} alternating rounds")
+print(
+    f"query {query!r}: wall clock of one process, "
+    f"{ROUNDS} alternating rounds"
+)
 for name, ms in times.items():
     print(
         f"{name:<40} min {min(ms):7.0f} ms  "
@@ -131,4 +135,5 @@ a = statistics.median(times["rebuild index, then search (ch08)"])
 b = statistics.median(times["sift search (mmap segment)"])
 print(f"rebuild / mmap (medians): {a / b:.1f}x")
 PY
-sift search --limit 3 "rust 所有权" | sed -n '$p' | tee out/ch12/search_breakdown.txt
+sift search --limit 3 "rust 所有权" | sed -n '$p' \
+    | tee out/ch12/search_breakdown.txt

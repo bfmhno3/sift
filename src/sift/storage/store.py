@@ -260,7 +260,9 @@ def _read_old(
     except IndexCorruptError as error:
         logger.warning("rebuilding, the old index is unusable: %s", error)
         return None
-    if manifest.corpus != str(corpus) or old_names != list(names):
+    if Path(
+        manifest.corpus
+    ).resolve() != corpus.resolve() or old_names != list(names):
         logger.info("rebuilding: corpus or pipeline changed")
         return None
     return manifest, documents

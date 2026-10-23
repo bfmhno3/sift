@@ -64,11 +64,9 @@ def main() -> None:
         with quoted.open(encoding="utf-8", newline="") as file:
             print("read   :", list(csv.reader(file)))
         print("dialects:", sorted(csv.list_dialects()))
-        tabbed = csv.writer(
-            quoted.open("w", encoding="utf-8", newline=""), delimiter="\t"
-        )
-        tabbed.writerow(["a", "b c"])
-        print("tab-delimited ok")
+        with quoted.open("w", encoding="utf-8", newline="") as file:
+            csv.writer(file, delimiter="\t").writerow(["a", "b c"])
+        print("tab-delimited:", quoted.read_bytes())
 
 
 if __name__ == "__main__":

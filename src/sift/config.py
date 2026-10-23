@@ -28,25 +28,29 @@ class Config:
 
 
 def _section(
-    data: dict[str, Any], name: str, keys: set[str]
+    path: Path, data: dict[str, Any], name: str, keys: set[str]
 ) -> dict[str, Any]:
     """Return data[name] after checking that it only has known keys."""
     section = data.get(name, {})
     if not isinstance(section, dict):
-        raise ConfigError(f"[{name}] must be a table")
+        raise ConfigError(f"{path}: [{name}] must be a table")
     unknown = sorted(set(section) - keys)
     if unknown:
-        raise ConfigError(f"unknown key in [{name}]: {', '.join(unknown)}")
+        raise ConfigError(
+            f"{path}: unknown key in [{name}]: {', '.join(unknown)}"
+        )
     return section
 
 
-def _number(section: dict[str, Any], name: str, key: str) -> float | None:
+def _number(
+    path: Path, section: dict[str, Any], name: str, key: str
+) -> float | None:
     """Return a float setting (an int is fine), or None if absent."""
     if key not in section:
         return None
     value = section[key]
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ConfigError(f"[{name}] {key} must be a number")
+        raise ConfigError(f"{path}: [{name}] {key} must be a number")
     return float(value)
 
 
@@ -73,28 +77,32 @@ def load_config(path: Path | None = None) -> Config:
     if unknown:
         raise ConfigError(f"{path}: unknown section: {', '.join(unknown)}")
     default = Config()
-    index = _section(data, "index", {"corpus", "path"})
-    analysis = _section(data, "analysis", {"pipeline"})
-    search = _section(data, "search", {"k1", "b", "limit"})
+    index = _section(path, data, "index", {"corpus", "path"})
+    analysis = _section(path, data, "analysis", {"pipeline"})
+    search = _section(path, data, "search", {"k1", "b", "limit"})
     for key in ("corpus", "path"):
         if key in index and not isinstance(index[key], str):
-            raise ConfigError(f"[index] {key} must be a string")
+            raise ConfigError(f"{path}: [index] {key} must be a string")
     names = analysis.get("pipeline", list(default.pipeline))
     if (
         not isinstance(names, list)
         or not names
         or not all(isinstance(name, str) for name in names)
     ):
-        raise ConfigError("[analysis] pipeline must be a non-empty list")
-    k1 = _number(search, "search", "k1")
-    b = _number(search, "search", "b")
+        raise ConfigError(
+            f"{path}: [analysis] pipeline must be a non-empty list"
+        )
+    k1 = _number(path, search, "search", "k1")
+    b = _number(path, search, "search", "b")
     limit = search.get("limit", default.limit)
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-        raise ConfigError("[search] limit must be an integer of at least 1")
+        raise ConfigError(
+            f"{path}: [search] limit must be an integer of at least 1"
+        )
     if k1 is not None and k1 < 0:
-        raise ConfigError("[search] k1 must not be negative")
+        raise ConfigError(f"{path}: [search] k1 must not be negative")
     if b is not None and not 0 <= b <= 1:
-        raise ConfigError("[search] b must be between 0 and 1")
+        raise ConfigError(f"{path}: [search] b must be between 0 and 1")
     return Config(
         corpus=Path(index.get("corpus", default.corpus)),
         index_path=Path(index.get("path", default.index_path)),

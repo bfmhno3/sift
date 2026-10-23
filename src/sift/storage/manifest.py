@@ -118,7 +118,8 @@ def plan_update(corpus: Path, old: Manifest | None) -> Plan:
     the manifest and its sha256 differs too; a file that was only
     touched keeps its id and gets the new mtime. New files are
     numbered from next_doc_id in sorted path order, and files that
-    vanished are listed in removed.
+    vanished are listed in removed. The manifest records the resolved
+    corpus path.
     """
     paths = sorted(corpus.rglob("*.md"))
     previous = old.files if old else {}
@@ -150,5 +151,5 @@ def plan_update(corpus: Path, old: Manifest | None) -> Plan:
         entry.doc_id for rel, entry in previous.items() if rel not in files
     )
     reparse.sort(key=lambda change: change.entry.doc_id)
-    manifest = Manifest(str(corpus), next_id, files)
+    manifest = Manifest(str(corpus.resolve()), next_id, files)
     return Plan(manifest, reparse, removed, unchanged)
