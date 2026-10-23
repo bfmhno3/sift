@@ -1,5 +1,7 @@
 """A relative import in a file run as a script fails (expected)."""
 
+# error: ImportError: attempted relative import with no known parent
+# package
 from .relative_imports import a
 
 

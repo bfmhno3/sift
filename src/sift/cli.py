@@ -44,6 +44,12 @@ CORPUS = Path("corpus/posts")
 QUERIES = Path("bench/queries.txt")
 
 
+def check_corpus(root: Path) -> None:
+    """Raise SiftError if root is not a directory."""
+    if not root.is_dir():
+        raise SiftError(f"no corpus at {root}")
+
+
 @timed
 def load_index(
     root: Path,
@@ -61,6 +67,7 @@ def load_index(
     no index is returned, with keep_going they are logged as warnings
     and skipped (their doc_ids stay unused).
     """
+    check_corpus(root)
     documents: list[Document] = []
     index = InvertedIndex()
     with IndexWriter(index, pipeline) as writer:
@@ -196,6 +203,7 @@ def run_search(args: argparse.Namespace) -> None:
 def find_document(doc_id: int) -> Document:
     """Return the document with doc_id; raise SiftError if none."""
     check_index_dir()
+    check_corpus(CORPUS)
     for doc in iter_documents(CORPUS):
         if doc.doc_id == doc_id:
             return doc
@@ -338,7 +346,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     A QuerySyntaxError prints the query and a caret line and exits 3.
     IndexMissingError prints ``sift: ...`` and exits 4. Any other
     SiftError, alone or inside an ExceptionGroup, prints
-    ``error: ...`` and exits 1. Success returns None.
+    ``error: ...`` and exits 1. Ctrl-C prints ``interrupted`` and exits
+    130 (128 + SIGINT). Success returns None.
     """
     setup_logging()
     args = build_parser().parse_args(argv)
@@ -353,6 +362,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     except SiftError as error:
         print(f"error: {error}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        sys.exit(130)
     except ExceptionGroup as group:
         _, other = group.split(SiftError)
         if other is not None:

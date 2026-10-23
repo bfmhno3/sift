@@ -50,6 +50,14 @@ def main() -> None:
     print("child exit status after SIGTERM:", code)
     print("that is", signal.Signals(-code).name)
 
+    code = (
+        "import os, signal, sift.cli as cli;"
+        "cli.run_stats = lambda a: os.kill(os.getpid(), signal.SIGINT);"
+        "cli.main(['stats'])"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True)
+    print("sift on Ctrl-C:", done.returncode, done.stderr.decode().strip())
+
     try:
         signal.signal(signal.SIGKILL, on_sigint)
     except OSError as error:

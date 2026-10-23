@@ -30,7 +30,14 @@ def main() -> None:
     # error: ImportError: cannot import name 'a_value' from partially
     # initialized module 'circular.a' (most likely due to a circular
     # import) (/path/to/lab/ch11/circular/a.py)
-    import circular.a
+    try:
+        import circular.a
+    except ImportError:
+        # the failed import removed both half-built modules again
+        for name in ("circular.a", "circular.b"):
+            print(f"after the failure, {name} in sys.modules:", end=" ")
+            print(name in sys.modules)
+        raise
 
     print(circular.a.a_value)
 

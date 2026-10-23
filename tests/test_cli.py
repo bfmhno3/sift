@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -20,7 +21,7 @@ def no_sift_index(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def mini_cli(monkeypatch: pytest.MonkeyPatch, mini_root):
+def mini_cli(monkeypatch: pytest.MonkeyPatch, mini_root: Path) -> ModuleType:
     """Point the CLI at the fixture posts instead of corpus/posts."""
     monkeypatch.setattr(cli, "CORPUS", mini_root)
     return cli
@@ -280,3 +281,36 @@ def test_python_dash_m_sift_is_the_same_cli() -> None:
         check=True,
     )
     assert done.stdout == f"sift {sift.__version__}\n"
+
+
+def test_keyboard_interrupt_exits_130_quietly(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def boom(args: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_stats", boom)
+    assert run_main("stats") == 130
+    err = capsys.readouterr().err
+    assert err == "interrupted\n"
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "command", ["search rust", "stats", "show 0", "index"]
+)
+def test_missing_corpus_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    command: str,
+) -> None:
+    missing = tmp_path / "posts"
+    monkeypatch.setattr(cli, "CORPUS", missing)
+    args = command.split()
+    if args[0] == "index":
+        args += ["--corpus", str(missing)]
+    assert run_main(*args) == 1
+    err = capsys.readouterr().err
+    assert err.endswith(f"error: no corpus at {missing}\n")

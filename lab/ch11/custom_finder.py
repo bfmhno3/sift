@@ -3,6 +3,8 @@
 import importlib.abc
 import importlib.util
 import sys
+from collections.abc import Sequence
+from importlib.machinery import ModuleSpec
 from types import ModuleType
 
 
@@ -13,7 +15,12 @@ class LoggingFinder(importlib.abc.MetaPathFinder):
         """Start with an empty log."""
         self.seen: list[str] = []
 
-    def find_spec(self, fullname, path=None, target=None):
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None = None,
+        target: ModuleType | None = None,
+    ) -> ModuleSpec | None:
         """Log fullname and decline, so the next finder runs."""
         self.seen.append(fullname)
         return None
@@ -38,7 +45,12 @@ class StringFinder(importlib.abc.MetaPathFinder):
         """Keep the sources."""
         self.sources = sources
 
-    def find_spec(self, fullname, path=None, target=None):
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None = None,
+        target: ModuleType | None = None,
+    ) -> ModuleSpec | None:
         """Return a spec for a known name, else None."""
         if fullname in self.sources:
             loader = StringLoader(self.sources[fullname])
