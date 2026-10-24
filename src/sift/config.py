@@ -8,7 +8,7 @@ never edits its own configuration.
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeIs, cast
 
 from sift.errors import ConfigError
 
@@ -31,15 +31,24 @@ def _section(
     path: Path, data: dict[str, Any], name: str, keys: set[str]
 ) -> dict[str, Any]:
     """Return data[name] after checking that it only has known keys."""
-    section = data.get(name, {})
-    if not isinstance(section, dict):
+    found: object = data.get(name, {})
+    if not isinstance(found, dict):
         raise ConfigError(f"{path}: [{name}] must be a table")
+    section = cast("dict[str, Any]", found)
     unknown = sorted(set(section) - keys)
     if unknown:
         raise ConfigError(
             f"{path}: unknown key in [{name}]: {', '.join(unknown)}"
         )
     return section
+
+
+def _is_str_list(value: object) -> TypeIs[list[str]]:
+    """Return True if value is a list that holds only strings."""
+    if not isinstance(value, list):
+        return False
+    items = cast("list[object]", value)
+    return all(isinstance(item, str) for item in items)
 
 
 def _number(
@@ -84,11 +93,7 @@ def load_config(path: Path | None = None) -> Config:
         if key in index and not isinstance(index[key], str):
             raise ConfigError(f"{path}: [index] {key} must be a string")
     names = analysis.get("pipeline", list(default.pipeline))
-    if (
-        not isinstance(names, list)
-        or not names
-        or not all(isinstance(name, str) for name in names)
-    ):
+    if not _is_str_list(names) or not names:
         raise ConfigError(
             f"{path}: [analysis] pipeline must be a non-empty list"
         )

@@ -18,8 +18,8 @@ def setup_logging(level: str = "WARNING", *, rich: bool = False) -> None:
     handler, it never adds a second one. rich is accepted and
     ignored: the rich handler arrives in chapter 19.
     """
-    number = logging.getLevelName(level.upper())
-    if not isinstance(number, int):
+    number = logging.getLevelNamesMapping().get(level.upper())
+    if number is None:
         raise ValueError(f"unknown log level: {level!r}")
     logger = logging.getLogger("sift")
     for handler in logger.handlers[:]:

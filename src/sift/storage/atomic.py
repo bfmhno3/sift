@@ -2,11 +2,11 @@
 
 import os
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Buffer, Iterable
 from pathlib import Path
 
 
-def atomic_write(path: Path, chunks: Iterable[bytes]) -> None:
+def atomic_write(path: Path, chunks: Iterable[Buffer]) -> None:
     """Replace path with the concatenated chunks, all or nothing.
 
     The bytes go to a temporary file in the same directory, are

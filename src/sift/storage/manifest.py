@@ -31,7 +31,7 @@ class Manifest:
 
     corpus: str
     next_doc_id: int = 0
-    files: dict[str, FileEntry] = field(default_factory=dict)
+    files: dict[str, FileEntry] = field(default_factory=dict[str, FileEntry])
 
 
 @dataclass(frozen=True, slots=True)

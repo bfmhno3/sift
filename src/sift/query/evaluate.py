@@ -1,15 +1,15 @@
 """Evaluate a query tree against an index: postings in, postings out."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import assert_never
 
 from sift.analysis import Pipeline, build_pipeline
-from sift.index import InvertedIndex, Posting, PostingList
+from sift.index import IndexView, Posting, PostingList, PostingLookup
 from sift.query.ast import And, Field, Node, Not, Or, Phrase, Prefix, Term
 
 
 def phrase_postings(
-    lookup: Mapping[str, PostingList],
+    lookup: PostingLookup,
     terms: Sequence[str],
     offsets: Sequence[int] | None = None,
 ) -> PostingList:
@@ -81,7 +81,7 @@ def _positioned(
 
 
 def _words(
-    lookup: Mapping[str, PostingList], pipeline: Pipeline, words: Sequence[str]
+    lookup: PostingLookup, pipeline: Pipeline, words: Sequence[str]
 ) -> PostingList | None:
     """Return the phrase of words, or None if no word has a token."""
     terms, offsets = _positioned(pipeline, words)
@@ -90,21 +90,19 @@ def _words(
     return phrase_postings(lookup, terms, offsets)
 
 
-def _universe(index: InvertedIndex) -> PostingList:
+def _universe(index: IndexView) -> PostingList:
     """Return every document, with empty positions."""
     return PostingList(Posting(doc_id, ()) for doc_id in index.documents)
 
 
-def _metadata_match(
-    name: str, value: str, index: InvertedIndex
-) -> PostingList:
+def _metadata_match(name: str, value: str, index: IndexView) -> PostingList:
     """Return documents whose tag, category or series equals value.
 
     The comparison is exact and case-insensitive, after collapsing
     runs of whitespace; it is a scan over the documents.
     """
     wanted = " ".join(value.split()).casefold()
-    found = []
+    found: list[Posting] = []
     for doc_id, doc in index.documents.items():
         match name:
             case "tag":
@@ -121,7 +119,7 @@ def _metadata_match(
 
 
 def _field(
-    name: str, value: Node, index: InvertedIndex, pipeline: Pipeline
+    name: str, value: Node, index: IndexView, pipeline: Pipeline
 ) -> PostingList | None:
     """Evaluate ``name:value``; None if a title value has no tokens."""
     match name, value:
@@ -138,7 +136,7 @@ def _field(
 
 
 def _prefix(
-    text: str, index: InvertedIndex, pipeline: Pipeline
+    text: str, index: IndexView, pipeline: Pipeline
 ) -> PostingList | None:
     """Evaluate ``text*``: the last token is a prefix of index terms."""
     terms, offsets = _positioned(pipeline, [text])
@@ -152,7 +150,7 @@ def _prefix(
 
 
 def _eval(
-    node: Node, index: InvertedIndex, pipeline: Pipeline
+    node: Node, index: IndexView, pipeline: Pipeline
 ) -> PostingList | None:
     """Evaluate node; None means "no constraint" (only stopwords)."""
     match node:
@@ -186,7 +184,7 @@ def _eval(
 
 
 def evaluate(
-    node: Node, index: InvertedIndex, pipeline: Pipeline | None = None
+    node: Node, index: IndexView, pipeline: Pipeline | None = None
 ) -> PostingList:
     """Return the documents of index that match node.
 

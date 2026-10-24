@@ -1,16 +1,16 @@
 """Inverted index, version 3: a Mapping of terms to postings."""
 
 from bisect import bisect_left
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from operator import attrgetter
 from types import TracebackType
-from typing import Self
+from typing import Protocol, Self
 
 from sift.analysis import Pipeline, Token, build_pipeline
 from sift.document import Document
 
-_DOC_ID = attrgetter("doc_id")
+_DOC_ID: Callable[[Posting], int] = attrgetter("doc_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +76,8 @@ class PostingList:
 
     def __contains__(self, doc_id: object) -> bool:
         """Return True if some posting has this doc_id."""
+        if not isinstance(doc_id, int):
+            return False
         i = bisect_left(self._postings, doc_id, key=_DOC_ID)
         return i < len(self._postings) and self._postings[i].doc_id == doc_id
 
@@ -89,7 +91,7 @@ class PostingList:
             return NotImplemented
         return self._postings == other._postings
 
-    def __and__(self, other: PostingList) -> PostingList:
+    def __and__(self, other: object) -> PostingList:
         """Return the documents found in both lists."""
         if not isinstance(other, PostingList):
             return NotImplemented
@@ -107,7 +109,7 @@ class PostingList:
                 j += 1
         return out
 
-    def __or__(self, other: PostingList) -> PostingList:
+    def __or__(self, other: object) -> PostingList:
         """Return the documents found in either list."""
         if not isinstance(other, PostingList):
             return NotImplemented
@@ -136,7 +138,7 @@ class PostingList:
         out._postings = [p for p in self._postings if p.doc_id not in gone]
         return out
 
-    def __sub__(self, other: PostingList) -> PostingList:
+    def __sub__(self, other: object) -> PostingList:
         """Return the documents of self that other lacks."""
         if not isinstance(other, PostingList):
             return NotImplemented
@@ -151,6 +153,50 @@ def _positions(tokens: Iterable[Token]) -> dict[str, list[int]]:
     for token in tokens:
         positions.setdefault(token.text, []).append(token.position)
     return positions
+
+
+class PostingLookup(Protocol):
+    """Anything that maps a term to its PostingList, with a default."""
+
+    def get(self, term: str, default: PostingList, /) -> PostingList:
+        """Return the postings of term, or default if it has none."""
+        ...
+
+
+class IndexView(PostingLookup, Protocol):
+    """What Searcher and evaluate need from an index.
+
+    InvertedIndex (in memory) and SegmentIndex (mmap) both conform;
+    neither inherits from this class.
+    """
+
+    @property
+    def documents(self) -> Mapping[int, Document]:
+        """Return the live documents by doc_id."""
+        ...
+
+    @property
+    def title_index(self) -> Mapping[str, PostingList]:
+        """Return the index of the titles."""
+        ...
+
+    @property
+    def n_docs(self) -> int:
+        """Return the number of live documents."""
+        ...
+
+    @property
+    def avg_doc_len(self) -> float:
+        """Return the mean tokens per document."""
+        ...
+
+    def doc_len(self, doc_id: int) -> int:
+        """Return the number of tokens indexed for doc_id."""
+        ...
+
+    def terms_with_prefix(self, prefix: str) -> list[str]:
+        """Return the sorted body terms that start with prefix."""
+        ...
 
 
 class InvertedIndex(Mapping[str, PostingList]):

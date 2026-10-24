@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sift.analysis import Pipeline, build_pipeline
-from sift.index import InvertedIndex, PostingList
+from sift.index import IndexView, PostingList
 from sift.query import (
     And,
     Node,
@@ -58,11 +58,11 @@ def positive_leaves(node: Node) -> list[Term | Prefix | Phrase]:
 
 
 class Searcher:
-    """Run queries against an InvertedIndex and rank with BM25."""
+    """Run queries against an index and rank with BM25."""
 
     def __init__(
         self,
-        index: InvertedIndex,
+        index: IndexView,
         *,
         k1: float = 1.2,
         b: float = 0.75,
@@ -135,7 +135,7 @@ class Searcher:
                     self.b,
                 )
         terms = self._highlight_terms(leaves)
-        hits = []
+        hits: list[Hit] = []
         for doc_id, score in top_k(scores, limit):
             doc = index.documents[doc_id]
             hits.append(

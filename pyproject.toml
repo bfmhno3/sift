@@ -25,3 +25,13 @@ testpaths = ["tests", "src"]
 markers = [
   "slow: needs the full corpus or many generated cases",
 ]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+files = ["src"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+include = ["src"]
+pythonVersion = "3.14"

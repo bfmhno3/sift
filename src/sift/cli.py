@@ -290,7 +290,7 @@ def run_open(args: argparse.Namespace) -> None:
 def run_bench_index(args: argparse.Namespace) -> None:
     """Time args.repeat full index builds into a temporary directory."""
     config = load_config()
-    seconds = []
+    seconds: list[float] = []
     with tempfile.TemporaryDirectory(prefix="sift-bench-") as tmp:
         for _ in range(args.repeat):
             start = time.perf_counter()
@@ -309,7 +309,7 @@ def run_bench_search(args: argparse.Namespace) -> None:
     directory = index_dir(config)
     require_index(directory)
     queries = QUERIES.read_text(encoding="utf-8").splitlines()
-    timings = []
+    timings: list[tuple[str, int, float]] = []
     with open_index(directory) as index:
         searcher = Searcher(
             index,
@@ -437,6 +437,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         if other is not None:
             raise
         print(f"error: {group.message}", file=sys.stderr)
-        for error in group.exceptions:
-            print(f"  {error}", file=sys.stderr)
+        for failure in group.exceptions:
+            print(f"  {failure}", file=sys.stderr)
         sys.exit(1)

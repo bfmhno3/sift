@@ -30,7 +30,13 @@ the duration of the call, so no connection outlives a command.
 """
 
 import json
-from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Collection,
+    Generator,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -185,7 +191,7 @@ def open_db(path: Path) -> sessionmaker[Session]:
 
 
 @contextmanager
-def session_scope(path: Path) -> Iterator[Session]:
+def session_scope(path: Path) -> Generator[Session]:
     """Yield a session on the database at path.
 
     The transaction commits when the block ends and rolls back when it

@@ -84,9 +84,8 @@ class Document:
             if key not in meta:
                 raise FrontMatterError(path, 1, f"missing {key!r}")
         updated = _optional_str(meta, "updated")
-        tags = meta.get("tags", [])
-        if not isinstance(tags, list):
-            tags = [tags]
+        raw_tags = meta.get("tags", [])
+        tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
         return cls(
             doc_id=doc_id,
             path=path,

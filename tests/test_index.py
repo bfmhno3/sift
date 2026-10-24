@@ -83,11 +83,19 @@ def test_operators_return_new_lists() -> None:
 
 def test_operators_refuse_other_types() -> None:
     with pytest.raises(TypeError):
-        plist(d1=()) & {1}  # type: ignore[operator]
+        plist(d1=()) & {1}
     with pytest.raises(TypeError):
-        plist(d1=()) | [1]  # type: ignore[operator]
+        plist(d1=()) | [1]
     with pytest.raises(TypeError):
-        plist(d1=()) - 1  # type: ignore[operator]
+        plist(d1=()) - 1
+
+
+def test_contains_is_false_for_a_non_int() -> None:
+    pl = plist(d1=(), d2=())
+    assert 1 in pl
+    assert 3 not in pl
+    assert "1" not in pl
+    assert None not in pl
 
 
 def test_without_drops_the_given_ids() -> None:
