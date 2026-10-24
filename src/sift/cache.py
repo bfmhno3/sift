@@ -10,7 +10,9 @@ class LRUCache[K, V]:
     A read or a write moves the key to the fresh end of an
     OrderedDict; when the cache is full, the key at the stale end is
     evicted. ``hits`` and ``misses`` count the lookups made through
-    ``get``, ``__getitem__`` and ``get_or_set``.
+    ``get``, ``__getitem__`` and ``get_or_set``. Not thread-safe:
+    lookups and evictions are several steps, so guard it with a lock
+    if threads share one cache.
     """
 
     def __init__(self, maxsize: int) -> None:
@@ -26,10 +28,10 @@ class LRUCache[K, V]:
         """Return the value of key and refresh it, or None."""
         try:
             value = self._data[key]
+            self._data.move_to_end(key)
         except KeyError:
             self.misses += 1
             return None
-        self._data.move_to_end(key)
         self.hits += 1
         return value
 
@@ -37,10 +39,10 @@ class LRUCache[K, V]:
         """Return the value of key and refresh it; KeyError if absent."""
         try:
             value = self._data[key]
+            self._data.move_to_end(key)
         except KeyError:
             self.misses += 1
             raise
-        self._data.move_to_end(key)
         self.hits += 1
         return value
 
@@ -54,14 +56,15 @@ class LRUCache[K, V]:
     def get_or_set(self, key: K, make: Callable[[K], V]) -> V:
         """Return the value of key, computing make(key) on a miss.
 
-        A cached None is a hit; only an absent key calls make.
+        A cached None is a hit; only an absent key calls make. If make
+        raises, the exception propagates as is and nothing is cached.
         """
-        try:
+        if key in self._data:
             return self[key]
-        except KeyError:
-            value = make(key)
-            self[key] = value
-            return value
+        self.misses += 1
+        value = make(key)
+        self[key] = value
+        return value
 
     def __contains__(self, key: object) -> bool:
         """Return True if key is cached, without refreshing it."""

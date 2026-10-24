@@ -131,3 +131,19 @@ def test_matches_a_list_model(size: int, keys: list[int]) -> None:
         del model[:-size]
     assert len(cache) == len(model) <= size
     assert all(key in cache for key in model)
+
+
+def test_a_failing_make_raises_plainly_and_caches_nothing() -> None:
+    cache = LRUCache[str, int](2)
+    cache["a"] = 1
+
+    def make(key: str) -> int:
+        raise ValueError(key)
+
+    with pytest.raises(ValueError, match="b") as info:
+        cache.get_or_set("b", make)
+    assert info.value.__context__ is None
+    assert "b" not in cache
+    assert len(cache) == 1
+    assert cache.get("a") == 1
+    assert cache.misses == 1
