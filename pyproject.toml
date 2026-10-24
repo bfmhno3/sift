@@ -30,6 +30,7 @@ markers = [
 strict = true
 python_version = "3.14"
 files = ["src"]
+mypy_path = "src"
 
 [tool.pyright]
 typeCheckingMode = "strict"
