@@ -238,8 +238,34 @@ def test_inheritance_collects_and_overrides() -> None:
 
 
 def test_unknown_setting_in_the_constructor() -> None:
-    with pytest.raises(TypeError, match="unknown setting: nope"):
+    with pytest.raises(ConfigError, match="unknown setting: nope"):
         Demo(nope=1)
+    with pytest.raises(ConfigError, match=r"did you mean count\?"):
+        Demo(cuont=1)
+
+
+def test_assigning_an_unknown_attribute_is_refused() -> None:
+    config = Config()
+    with pytest.raises(ConfigError, match=r"did you mean limit\?"):
+        config.limt = 5  # type: ignore[attr-defined]
+    assert "limt" not in vars(config)
+
+
+def test_delete_resets_to_the_default() -> None:
+    demo = Demo(count=9)
+    del demo.count
+    assert demo.count == 3
+    assert "count" not in vars(demo)
+    del demo.count  # deleting twice is fine
+
+
+def test_bool_and_int_rules_survive_the_fast_path() -> None:
+    assert Demo(ratio=1).ratio == 1.0
+    assert isinstance(Demo(ratio=1).ratio, float)
+    with pytest.raises(ConfigError):
+        Demo(count=True)
+    with pytest.raises(ConfigError):
+        Demo(ratio=True)
 
 
 def test_eq_and_repr() -> None:

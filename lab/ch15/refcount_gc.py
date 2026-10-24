@@ -43,6 +43,7 @@ def main() -> None:
         "  None, 1, 'a'  :",
         sys.getrefcount(None) > 1000,
         sys.getrefcount(1) > 1000,
+        sys.getrefcount("a") > 1000,
         "(immortal objects in 3.12+)",
     )
     print("-- refcount hits zero: freed at once")

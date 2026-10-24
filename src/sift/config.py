@@ -11,6 +11,7 @@ checks the type and the range, so a bad value fails where it is
 written, not where it is used.
 """
 
+import difflib
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,6 +21,7 @@ from sift.errors import ConfigError
 
 DEFAULT_PATH = Path("sift.toml")
 
+_NUMBER_TYPES = (int, float)
 _NOUNS: dict[type, str] = {
     int: "an integer",
     float: "a number",
@@ -111,6 +113,10 @@ class Setting[T](SettingBase):
         """Validate value and store it in the instance."""
         instance.__dict__[self.name] = self.validate(value)
 
+    def __delete__(self, instance: object) -> None:
+        """Forget the stored value: the default shows again."""
+        instance.__dict__.pop(self.name, None)
+
     def _noun(self) -> str:
         """Return how a message names the kind: "an integer"."""
         return _NOUNS.get(self.kind, f"a {self.kind.__name__}")
@@ -139,7 +145,7 @@ class Setting[T](SettingBase):
             value = float(value)
         if not isinstance(value, self.kind):
             raise ConfigError(f"{self.label} must be {self._noun()}")
-        if isinstance(value, int | float):
+        if isinstance(value, _NUMBER_TYPES):
             below = self.min is not None and value < self.min
             above = self.max is not None and value > self.max
             if below or above:
@@ -239,11 +245,25 @@ class Settings:
 
     def __init__(self, **values: object) -> None:
         """Set the given settings; the others keep their defaults."""
-        unknown = sorted(set(values) - set(self._settings))
-        if unknown:
-            raise TypeError(f"unknown setting: {', '.join(unknown)}")
         for name, value in values.items():
             setattr(self, name, value)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Only declared settings can be assigned.
+
+        A typo such as ``config.limt = 5`` raises ConfigError, not a
+        silent new attribute.
+        """
+        if name not in self._settings:
+            raise ConfigError(self._unknown(name))
+        super().__setattr__(name, value)
+
+    @classmethod
+    def _unknown(cls, name: str) -> str:
+        """Return the message for an undeclared setting name."""
+        text = f"unknown setting: {name}"
+        close = difflib.get_close_matches(name, cls._settings, n=1)
+        return f"{text} (did you mean {close[0]}?)" if close else text
 
     def values(self) -> dict[str, object]:
         """Return every setting by name, defaults included."""

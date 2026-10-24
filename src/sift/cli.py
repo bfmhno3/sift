@@ -31,6 +31,7 @@ from sift.config import Config, load_config
 from sift.corpus import iter_documents
 from sift.document import Document
 from sift.errors import (
+    ConfigError,
     IndexMissingError,
     QuerySyntaxError,
     SiftError,
@@ -112,6 +113,20 @@ def positive_int(text: str) -> int:
     if number < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1: {text!r}")
     return number
+
+
+def limit_arg(text: str) -> int:
+    """Convert text to a hit count, with the rules of ``Config.limit``."""
+    try:
+        number = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid int value: {text!r}"
+        ) from None
+    try:
+        return Config.limit.validate(number)
+    except ConfigError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
 
 
 def doc_id_arg(text: str) -> int:
@@ -366,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cmd.add_argument(
         "--limit",
-        type=positive_int,
+        type=limit_arg,
         default=None,
         help="most hits to print (default: [search] limit of sift.toml)",
     )

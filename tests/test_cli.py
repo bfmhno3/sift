@@ -315,6 +315,8 @@ def test_bench_index_repeats(
         ["bench"],
         ["show", "x"],
         ["search", "--limit", "0", "a"],
+        ["search", "--limit", "101", "a"],
+        ["search", "--limit", "x", "a"],
     ],
 )
 def test_bad_usage_exits_2(args: list[str]) -> None:
@@ -506,3 +508,12 @@ def test_show_reads_one_document(
     monkeypatch.setattr(cli, "load_documents", forbidden, raising=False)
     mini_cli.main(["show", "0"])
     assert "title: " in capsys.readouterr().out
+
+
+def test_limit_above_the_maximum_is_a_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["search", "--limit", "101", "a"])
+    assert caught.value.code == 2
+    assert "between 1 and 100" in capsys.readouterr().err
