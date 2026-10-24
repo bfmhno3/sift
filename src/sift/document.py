@@ -57,9 +57,13 @@ def _optional_str(meta: dict[str, Value], key: str) -> str | None:
     return None if key not in meta else str(meta[key])
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class Document:
-    """A post: its metadata and its text with Markdown stripped."""
+    """A post: its metadata and its text with Markdown stripped.
+
+    ``weakref_slot=True`` adds a ``__weakref__`` slot, so a
+    WeakValueDictionary can hold documents without keeping them alive.
+    """
 
     doc_id: int
     path: Path

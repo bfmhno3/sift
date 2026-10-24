@@ -1,7 +1,11 @@
 """Tests for sift.search."""
 
+import gc
+from dataclasses import replace
+
 import pytest
 
+from sift.document import Document
 from sift.errors import QuerySyntaxError
 from sift.index import InvertedIndex
 from sift.query import And, Field, Not, Or, Phrase, Prefix, Term
@@ -118,3 +122,57 @@ def test_a_tiny_cache_still_gives_the_same_snippets(
     plain = Searcher(mini_index, cache_size=1).search("chain tool")
     cached = Searcher(mini_index).search("chain tool")
     assert [h.snippet for h in plain.hits] == [h.snippet for h in cached.hits]
+
+
+def test_document_cache_counts_hits_and_misses(
+    mini_index: InvertedIndex,
+) -> None:
+    searcher = Searcher(mini_index)
+    first = searcher.search("chain").hits
+    assert (searcher.doc_hits, searcher.doc_misses) == (0, 1)
+    assert len(searcher.documents) == 1
+    second = searcher.search("chain").hits
+    assert (searcher.doc_hits, searcher.doc_misses) == (1, 1)
+    assert first == second
+    cached = searcher.documents[first[0].doc_id]
+    assert cached is mini_index.documents[first[0].doc_id]
+
+
+def test_document_cache_does_not_keep_documents_alive(
+    mini_index: InvertedIndex,
+) -> None:
+    loaded: list[int] = []
+
+    def load(doc_id: int) -> Document:
+        loaded.append(doc_id)
+        return replace(mini_index.documents[doc_id])
+
+    searcher = Searcher(mini_index, load=load)
+    expected = Searcher(mini_index).search("chain")
+    for round_no in range(1, 4):
+        result = searcher.search("chain")
+        assert [hit.doc_id for hit in result.hits] == [
+            hit.doc_id for hit in expected.hits
+        ]
+        gc.collect()
+        # no strong reference is left, so the entry is gone
+        assert len(searcher.documents) == 0
+        assert searcher.doc_hits == 0
+        assert searcher.doc_misses == round_no
+    assert loaded == [1, 1, 1]
+
+
+def test_document_cache_hits_while_a_document_is_held(
+    mini_index: InvertedIndex,
+) -> None:
+    searcher = Searcher(
+        mini_index, load=lambda doc_id: replace(mini_index.documents[doc_id])
+    )
+    searcher.search("chain")
+    held = searcher._document(1)
+    gc.collect()
+    assert searcher._document(1) is held
+    assert searcher.doc_hits == 1
+    del held
+    gc.collect()
+    assert 1 not in searcher.documents

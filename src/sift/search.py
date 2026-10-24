@@ -1,12 +1,15 @@
 """Search: parse, evaluate, score with BM25, build snippets."""
 
 import time
+import weakref
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from sift.analysis import Pipeline, build_pipeline
 from sift.cache import LRUCache
+from sift.document import Document
 from sift.index import IndexView, PostingList
 from sift.query import (
     And,
@@ -69,18 +72,42 @@ class Searcher:
         b: float = 0.75,
         pipeline: Pipeline | None = None,
         cache_size: int = 256,
+        load: Callable[[int], Document] | None = None,
     ) -> None:
         """Keep the index and the BM25 parameters.
 
         pipeline must be the one that built the index; it defaults to
         build_pipeline(). cache_size is how many analyzed query words
-        the LRU cache of ``term_cache`` keeps.
+        the LRU cache of ``term_cache`` keeps. load fetches a
+        Document by doc id on a cache miss; it defaults to
+        ``index.documents.__getitem__``.
         """
         self.index = index
         self.k1 = k1
         self.b = b
         self.pipeline = pipeline or build_pipeline()
         self.term_cache = LRUCache[str, tuple[str, ...]](cache_size)
+        self._load = load or index.documents.__getitem__
+        self.documents = weakref.WeakValueDictionary[int, Document]()
+        self.doc_hits = 0
+        self.doc_misses = 0
+
+    def _document(self, doc_id: int) -> Document:
+        """Return the Document of doc_id, shared while it is alive.
+
+        ``documents`` holds weak references only: an entry vanishes
+        when nothing else refers to its Document, so the cache never
+        keeps a removed or replaced document alive. A hit is counted
+        in ``doc_hits``, a miss in ``doc_misses``.
+        """
+        doc = self.documents.get(doc_id)
+        if doc is None:
+            self.doc_misses += 1
+            doc = self._load(doc_id)
+            self.documents[doc_id] = doc
+        else:
+            self.doc_hits += 1
+        return doc
 
     def _terms(self, text: str) -> tuple[str, ...]:
         """Return the index terms of a query word, cached."""
@@ -147,7 +174,7 @@ class Searcher:
         terms = self._highlight_terms(leaves)
         hits: list[Hit] = []
         for doc_id, score in top_k(scores, limit):
-            doc = index.documents[doc_id]
+            doc = self._document(doc_id)
             hits.append(
                 Hit(
                     doc_id,
