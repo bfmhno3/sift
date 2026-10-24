@@ -43,7 +43,8 @@ The posts live at <https://bfmhno3.github.io>.
 ```text
 pyproject.toml       package metadata (hatchling), pytest settings, the `sift` script
 sift.toml            settings: corpus, index directory, analysis pipeline, BM25
-src/sift/            the package (parallel.py: process, thread and interpreter pools)
+src/sift/            the package (parallel.py: process, thread and interpreter pools;
+                     server/raw.py: the hand-written asyncio HTTP server)
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -78,6 +79,9 @@ sift search --limit 3 rust
 sift index --full --jobs 4 --mode thread   # modes: process, thread, interp
 sift bench index --repeat 8 --jobs 1,2,4,8 --mode process,thread,interp
 PYTHONPATH=src python3.14t -m sift bench index --mode thread   # free-threaded, no venv
+sift serve --raw --port 8000   # /search?q=..., /docs/<id>, /health as JSON;
+                               # no authentication, 127.0.0.1 by default
+python3 lab/ch17/load.py --port 8000 --clients 100 --requests 20
 ```
 
 ## Corpus license

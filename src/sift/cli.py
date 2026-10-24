@@ -9,7 +9,9 @@ SiftError.
 ``sift search`` maps the segment file instead of rebuilding the index
 in memory, and logs the query in ``sift.db`` unless run with
 ``--no-log``; ``sift stats`` lists the last ten logged queries.
-SIFT_INDEX names another index directory.
+SIFT_INDEX names another index directory. ``sift serve --raw`` serves
+the index over HTTP with the hand-written asyncio server of
+``sift.server.raw``.
 
 The storage modules (and with them SQLAlchemy) are imported by the
 commands that use them, so ``sift --version`` and ``sift bench index``
@@ -17,6 +19,7 @@ start without that cost and run on an interpreter that lacks it.
 """
 
 import argparse
+import asyncio
 import json
 import os
 import platform
@@ -53,6 +56,7 @@ from sift.parallel import (
 )
 from sift.query import parse
 from sift.search import Searcher
+from sift.server.raw import serve
 from sift.snippet import render_plain
 from sift.util import timed
 
@@ -149,6 +153,19 @@ def doc_id_arg(text: str) -> int:
         ) from None
     if number < 0:
         raise argparse.ArgumentTypeError(f"negative document id: {text!r}")
+    return number
+
+
+def port_arg(text: str) -> int:
+    """Convert text to a TCP port, 0 to 65535, for argparse."""
+    try:
+        number = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid int value: {text!r}"
+        ) from None
+    if not 0 <= number <= 65535:
+        raise argparse.ArgumentTypeError(f"port out of range: {text!r}")
     return number
 
 
@@ -350,6 +367,37 @@ def run_open(args: argparse.Namespace) -> None:
         raise SiftError(f"{editor} exited with status {done.returncode}")
 
 
+def run_serve(args: argparse.Namespace) -> None:
+    """Serve /search, /docs/<id> and /health until SIGTERM or Ctrl-C.
+
+    Raise IndexMissingError (exit 4) if there is no index and
+    SiftError (exit 1) if the address cannot be bound. The URL is
+    printed on stdout once the socket listens.
+    """
+    from sift.storage.store import open_index
+
+    config = load_config()
+    directory = index_dir(config)
+    require_index(directory)
+    setup_logging("WARNING" if args.quiet else "INFO")
+    with open_index(directory) as index:
+        searcher = Searcher(
+            index,
+            k1=config.k1,
+            b=config.b,
+            pipeline=build_pipeline(index.pipeline_names),
+        )
+        asyncio.run(
+            serve(
+                searcher,
+                config,
+                args.host,
+                args.port,
+                announce=lambda text: print(text, flush=True),
+            )
+        )
+
+
 def print_bench_table(
     serial: float, timings: list[Timing], modes: Sequence[Mode]
 ) -> None:
@@ -493,6 +541,31 @@ def build_parser() -> argparse.ArgumentParser:
     cmd = commands.add_parser("open", help="open a document in $EDITOR")
     cmd.add_argument("doc_id", type=doc_id_arg, metavar="DOC_ID")
     cmd.set_defaults(func=run_open)
+
+    cmd = commands.add_parser("serve", help="serve search over HTTP")
+    cmd.add_argument(
+        "--raw",
+        action="store_true",
+        required=True,
+        help="the hand-written asyncio server (the only one so far)",
+    )
+    cmd.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="address to listen on (default: %(default)s)",
+    )
+    cmd.add_argument(
+        "--port",
+        type=port_arg,
+        default=8000,
+        help="port to listen on, 0 for any free one (default: %(default)s)",
+    )
+    cmd.add_argument(
+        "--quiet",
+        action="store_true",
+        help="do not log one line per request",
+    )
+    cmd.set_defaults(func=run_serve)
 
     cmd = commands.add_parser("bench", help="time indexing or searching")
     kinds = cmd.add_subparsers(

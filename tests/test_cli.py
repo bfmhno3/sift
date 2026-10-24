@@ -2,9 +2,13 @@
 
 import io
 import json
+import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
+import urllib.request
 from datetime import timedelta
 from pathlib import Path
 from types import ModuleType
@@ -410,6 +414,10 @@ def test_version_and_bench_do_not_import_sqlalchemy() -> None:
         ["search", "--limit", "0", "a"],
         ["search", "--limit", "101", "a"],
         ["search", "--limit", "x", "a"],
+        ["serve"],
+        ["serve", "--raw", "--port", "x"],
+        ["serve", "--raw", "--port", "-1"],
+        ["serve", "--raw", "--port", "65536"],
     ],
 )
 def test_bad_usage_exits_2(args: list[str]) -> None:
@@ -610,3 +618,82 @@ def test_limit_above_the_maximum_is_a_usage_error(
         cli.main(["search", "--limit", "101", "a"])
     assert caught.value.code == 2
     assert "between 1 and 100" in capsys.readouterr().err
+
+
+def test_serve_without_an_index_exits_4(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert run_main("serve", "--raw", "--port", "0") == 4
+    assert "run 'sift index' first" in capsys.readouterr().err
+
+
+def test_serve_on_a_busy_port_exits_1(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        port = taken.getsockname()[1]
+        assert run_main("serve", "--raw", "--port", str(port)) == 1
+    err = capsys.readouterr().err
+    assert err == (
+        f"error: cannot listen on 127.0.0.1:{port}: address already in use\n"
+    )
+
+
+def test_serve_answers_and_stops_on_sigterm(mini_cli, tmp_path: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if k != "SIFT_INDEX"}
+    server = subprocess.Popen(
+        [sys.executable, "-m", "sift", "serve", "--raw", "--port", "0"],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert server.stdout is not None
+        banner = server.stdout.readline().strip()
+        assert banner.startswith("listening on http://127.0.0.1:")
+        url = banner.removeprefix("listening on ")
+        with urllib.request.urlopen(f"{url}/search?q=chain") as response:
+            body = json.load(response)
+        assert body["total"] == 1
+        server.send_signal(signal.SIGTERM)
+        assert server.wait(timeout=10) == 0
+        assert server.stderr is not None
+        log = server.stderr.read()
+    finally:
+        if server.poll() is None:
+            server.kill()
+        server.communicate()
+    assert " GET /search?q=chain 200 " in log
+
+
+def test_serve_quiet_logs_no_requests(mini_cli, tmp_path: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if k != "SIFT_INDEX"}
+    server = subprocess.Popen(
+        [sys.executable, "-m", "sift", "serve", "--raw", "--port", "0"]
+        + ["--quiet"],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert server.stdout is not None
+        url = server.stdout.readline().strip().removeprefix("listening on ")
+        with urllib.request.urlopen(f"{url}/health") as response:
+            assert response.status == 200
+        server.send_signal(signal.SIGTERM)
+        assert server.wait(timeout=10) == 0
+        assert server.stderr is not None
+        assert server.stderr.read() == ""
+    finally:
+        if server.poll() is None:
+            server.kill()
+        server.communicate()
