@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TIMEOUT = 300
+EXTRA_TIMEOUT = 900
 XVFB = ["xvfb-run", "-a", "-s", "-screen 0 1100x700x24"]
 
 
@@ -80,7 +81,7 @@ def main() -> None:
     extra = lab / "extra.sh"
     if extra.exists():
         proc = subprocess.run(
-            ["bash", str(extra)], cwd=ROOT, env=env, timeout=TIMEOUT
+            ["bash", str(extra)], cwd=ROOT, env=env, timeout=EXTRA_TIMEOUT
         )
         ok = proc.returncode == 0
         print(

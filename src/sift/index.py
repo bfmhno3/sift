@@ -52,11 +52,35 @@ class PostingList:
         if len(set(ids)) != len(ids):
             raise ValueError("duplicate doc_id in postings")
 
+    @classmethod
+    def from_sorted(cls, postings: list[Posting]) -> Self:
+        """Wrap postings, already sorted by doc_id and unique.
+
+        The list is kept, not copied, and not checked: it is for code
+        that has just built it in order, such as unpickling.
+        """
+        out = cls()
+        out._postings = postings
+        return out
+
     def append(self, posting: Posting) -> None:
         """Add posting, whose doc_id must exceed every doc_id so far."""
         if self._postings and posting.doc_id <= self._postings[-1].doc_id:
             raise ValueError(f"doc_id {posting.doc_id} is not increasing")
         self._postings.append(posting)
+
+    def extend(self, other: PostingList) -> None:
+        """Add the postings of other, all after the ones here.
+
+        The first doc_id of other must exceed the last one here.
+        """
+        if (
+            self._postings
+            and other._postings
+            and other._postings[0].doc_id <= self._postings[-1].doc_id
+        ):
+            raise ValueError("doc_ids of other must come after self")
+        self._postings.extend(other._postings)
 
     def doc_ids(self) -> list[int]:
         """Return the doc_ids in increasing order."""
@@ -147,6 +171,28 @@ class PostingList:
         return out
 
 
+type _Wire = dict[str, list[tuple[int, tuple[int, ...]]]]
+type _State = tuple[dict[int, Document], dict[int, int], _Wire, _Wire]
+
+
+def _pack(postings: Mapping[str, PostingList]) -> _Wire:
+    """Return postings as plain (doc_id, positions) tuples."""
+    return {
+        term: [(p.doc_id, p.positions) for p in plist]
+        for term, plist in postings.items()
+    }
+
+
+def _unpack(wire: _Wire) -> dict[str, PostingList]:
+    """Return the PostingLists of the output of _pack."""
+    return {
+        term: PostingList.from_sorted(
+            [Posting(doc_id, pos) for doc_id, pos in pairs]
+        )
+        for term, pairs in wire.items()
+    }
+
+
 def _positions(tokens: Iterable[Token]) -> dict[str, list[int]]:
     """Group the positions of tokens by token text."""
     positions: dict[str, list[int]] = {}
@@ -219,6 +265,29 @@ class InvertedIndex(Mapping[str, PostingList]):
         self.title_index: dict[str, PostingList] = {}
         self._sorted_terms: list[str] | None = None
 
+    def __getstate__(self) -> _State:
+        """Return the state to pickle, with postings as plain tuples.
+
+        A Posting pickled as an object costs a Python-level call per
+        posting in both directions; (doc_id, positions) tuples go
+        through the C pickler and cost a fifth of that.
+        """
+        return (
+            self.documents,
+            self._doc_lens,
+            _pack(self._postings),
+            _pack(self.title_index),
+        )
+
+    def __setstate__(self, state: _State) -> None:
+        """Rebuild the index from the state of __getstate__."""
+        documents, doc_lens, body, titles = state
+        self.documents = documents
+        self._doc_lens = doc_lens
+        self._postings = _unpack(body)
+        self.title_index = _unpack(titles)
+        self._sorted_terms = None
+
     def add(
         self,
         doc: Document,
@@ -243,6 +312,31 @@ class InvertedIndex(Mapping[str, PostingList]):
         for term, found in _positions(title_tokens).items():
             posting = Posting(doc.doc_id, tuple(found))
             self.title_index.setdefault(term, PostingList()).append(posting)
+
+    def merge(self, other: InvertedIndex) -> None:
+        """Add every document of other, whose doc_ids all come later.
+
+        The result is the index that add would have built by taking
+        the documents of self, then those of other, in that order:
+        same postings, same term order. other is only read. A doc_id
+        of other that does not exceed every doc_id here raises
+        ValueError and leaves self unchanged.
+        """
+        if (
+            self.documents
+            and other.documents
+            and min(other.documents) <= max(self.documents)
+        ):
+            raise ValueError("doc_ids of other must come after self")
+        self.documents.update(other.documents)
+        self._doc_lens.update(other._doc_lens)
+        self._sorted_terms = None
+        for mine, theirs in (
+            (self._postings, other._postings),
+            (self.title_index, other.title_index),
+        ):
+            for term, plist in theirs.items():
+                mine.setdefault(term, PostingList()).extend(plist)
 
     def remove(self, doc_ids: Iterable[int]) -> None:
         """Forget the documents in doc_ids, body and title postings.

@@ -10,20 +10,24 @@ SiftError.
 in memory, and logs the query in ``sift.db`` unless run with
 ``--no-log``; ``sift stats`` lists the last ten logged queries.
 SIFT_INDEX names another index directory.
+
+The storage modules (and with them SQLAlchemy) are imported by the
+commands that use them, so ``sift --version`` and ``sift bench index``
+start without that cost and run on an interpreter that lacks it.
 """
 
 import argparse
 import json
 import os
+import platform
 import shlex
-import statistics
 import subprocess
 import sys
-import tempfile
 import time
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sift import __version__
 from sift.analysis import Pipeline, build_pipeline
@@ -38,18 +42,22 @@ from sift.errors import (
 )
 from sift.index import IndexWriter, InvertedIndex
 from sift.log import setup_logging
+from sift.parallel import (
+    MODES,
+    Mode,
+    Timing,
+    bench_index,
+    gil_enabled,
+    read_items,
+    replicate,
+)
 from sift.query import parse
 from sift.search import Searcher
 from sift.snippet import render_plain
-from sift.storage.db import load_document, log_query, recent_queries
-from sift.storage.store import (
-    DB,
-    SEGMENT,
-    SegmentIndex,
-    open_index,
-    update_index,
-)
 from sift.util import timed
+
+if TYPE_CHECKING:
+    from sift.storage.store import SegmentIndex
 
 CORPUS = Path("corpus/posts")
 QUERIES = Path("bench/queries.txt")
@@ -96,6 +104,8 @@ def index_dir(config: Config) -> Path:
 
 def require_index(directory: Path) -> None:
     """Raise IndexMissingError if directory holds no segment."""
+    from sift.storage.store import SEGMENT
+
     if not (directory / SEGMENT).is_file():
         raise IndexMissingError(
             f"no index at {directory}, run 'sift index' first"
@@ -142,6 +152,26 @@ def doc_id_arg(text: str) -> int:
     return number
 
 
+def jobs_list_arg(text: str) -> list[int]:
+    """Convert "1,2,4" to [1, 2, 4], without repeats, for argparse."""
+    return list(dict.fromkeys(positive_int(part) for part in text.split(",")))
+
+
+def modes_arg(text: str) -> list[Mode]:
+    """Convert "process,thread" to a list of modes, for argparse."""
+    modes: list[Mode] = []
+    for part in text.split(","):
+        for mode in MODES:
+            if part == mode:
+                modes.append(mode)
+                break
+        else:
+            raise argparse.ArgumentTypeError(
+                f"unknown mode {part!r}, use one of {', '.join(MODES)}"
+            )
+    return list(dict.fromkeys(modes))
+
+
 def print_stats(index: SegmentIndex) -> None:
     """Print document count, vocabulary size, size and 20 top terms."""
     totals = Counter(
@@ -159,6 +189,9 @@ def print_stats(index: SegmentIndex) -> None:
 
 def print_recent_queries(directory: Path, limit: int = 10) -> None:
     """Print the last limit logged queries, newest first."""
+    from sift.storage.db import recent_queries
+    from sift.storage.store import DB
+
     rows = recent_queries(directory / DB, limit)
     if not rows:
         print("no queries logged")
@@ -174,11 +207,18 @@ def print_recent_queries(directory: Path, limit: int = 10) -> None:
 
 def run_index(args: argparse.Namespace) -> None:
     """Build or update the index directory and print what changed."""
+    from sift.storage.store import update_index
+
     config = load_config()
     corpus = args.corpus or config.corpus
     start = time.perf_counter()
     report = update_index(
-        corpus, index_dir(config), config.pipeline, full=args.full
+        corpus,
+        index_dir(config),
+        config.pipeline,
+        full=args.full,
+        jobs=args.jobs,
+        mode=args.mode,
     )
     took = (time.perf_counter() - start) * 1000
     mode = "full rebuild" if report.full else "incremental"
@@ -193,6 +233,8 @@ def run_index(args: argparse.Namespace) -> None:
 
 def run_stats(args: argparse.Namespace) -> None:
     """Print the stats of the index."""
+    from sift.storage.store import open_index
+
     directory = index_dir(load_config())
     with open_index(directory) as index:
         print_stats(index)
@@ -212,6 +254,9 @@ def read_query(words: list[str]) -> str:
 
 def run_search(args: argparse.Namespace) -> None:
     """Print the best documents for the query."""
+    from sift.storage.db import log_query
+    from sift.storage.store import DB, open_index
+
     config = load_config()
     directory = index_dir(config)
     require_index(directory)
@@ -269,6 +314,9 @@ def run_search(args: argparse.Namespace) -> None:
 
 def find_document(doc_id: int) -> Document:
     """Return the document with doc_id; raise SiftError if none."""
+    from sift.storage.db import load_document
+    from sift.storage.store import DB
+
     directory = index_dir(load_config())
     require_index(directory)
     doc = load_document(directory / DB, doc_id)
@@ -302,24 +350,54 @@ def run_open(args: argparse.Namespace) -> None:
         raise SiftError(f"{editor} exited with status {done.returncode}")
 
 
+def print_bench_table(
+    serial: float, timings: list[Timing], modes: Sequence[Mode]
+) -> None:
+    """Print seconds and speedup over serial for every jobs and mode."""
+    print(f"{'jobs':>4}" + "".join(f"  {m:>17}" for m in modes))
+    for jobs in dict.fromkeys(t.jobs for t in timings):
+        row = {t.mode: t.seconds for t in timings if t.jobs == jobs}
+        cells = "".join(
+            f"  {row[m]:8.3f} s {serial / row[m]:5.2f}x" for m in modes
+        )
+        print(f"{jobs:>4}{cells}")
+
+
 def run_bench_index(args: argparse.Namespace) -> None:
-    """Time args.repeat full index builds into a temporary directory."""
+    """Time index_items on the corpus repeated args.repeat times.
+
+    The corpus is read once, copied args.repeat times in memory with
+    the doc_ids renumbered, and indexed for every jobs and mode. The
+    table shows the best of args.rounds runs in seconds and the
+    speedup over the serial build; jobs=1 is that build in every mode.
+    """
     config = load_config()
-    seconds: list[float] = []
-    with tempfile.TemporaryDirectory(prefix="sift-bench-") as tmp:
-        for _ in range(args.repeat):
-            start = time.perf_counter()
-            update_index(config.corpus, Path(tmp), config.pipeline, full=True)
-            seconds.append(time.perf_counter() - start)
+    check_corpus(config.corpus)
+    base = read_items(config.corpus)
+    items = replicate(base, args.repeat)
+    gil = "enabled" if gil_enabled() else "disabled"
     print(
-        f"{args.repeat} builds: "
-        f"min {min(seconds) * 1000:.1f} ms, "
-        f"median {statistics.median(seconds) * 1000:.1f} ms"
+        f"corpus: {len(base)} files x {args.repeat} = {len(items)} "
+        f"documents, pipeline {','.join(config.pipeline)}"
     )
+    print(
+        f"python {platform.python_version()}, GIL {gil}, "
+        f"{os.cpu_count()} CPUs, best of {args.rounds} rounds"
+    )
+    serial, timings = bench_index(
+        items,
+        config.pipeline,
+        args.jobs,
+        args.mode,
+        rounds=args.rounds,
+    )
+    print_bench_table(serial, timings, args.mode)
 
 
 def run_bench_search(args: argparse.Namespace) -> None:
     """Run bench/queries.txt: open the index once, time each query."""
+    from sift.storage.store import open_index
+
     config = load_config()
     directory = index_dir(config)
     require_index(directory)
@@ -373,6 +451,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="rebuild from scratch instead of updating",
     )
+    cmd.add_argument(
+        "--jobs",
+        type=positive_int,
+        default=1,
+        help="workers that parse and analyze files (default: 1)",
+    )
+    cmd.add_argument(
+        "--mode",
+        choices=MODES,
+        default="process",
+        help="kind of worker when --jobs > 1 (default: %(default)s)",
+    )
     cmd.set_defaults(func=run_index)
 
     cmd = commands.add_parser("search", help="search the index")
@@ -408,12 +498,32 @@ def build_parser() -> argparse.ArgumentParser:
     kinds = cmd.add_subparsers(
         title="benchmarks", dest="kind", metavar="KIND", required=True
     )
-    sub = kinds.add_parser("index", help="time full index builds")
+    sub = kinds.add_parser(
+        "index", help="time parallel indexing: a table of jobs x mode"
+    )
     sub.add_argument(
         "--repeat",
         type=positive_int,
         default=8,
-        help="number of builds (default: %(default)s)",
+        help="copies of the corpus to index (default: %(default)s)",
+    )
+    sub.add_argument(
+        "--jobs",
+        type=jobs_list_arg,
+        default="1,2,4,8",
+        help="comma-separated worker counts (default: %(default)s)",
+    )
+    sub.add_argument(
+        "--mode",
+        type=modes_arg,
+        default="process,thread,interp",
+        help="comma-separated modes (default: %(default)s)",
+    )
+    sub.add_argument(
+        "--rounds",
+        type=positive_int,
+        default=3,
+        help="runs per cell, the best is kept (default: %(default)s)",
     )
     sub.set_defaults(func=run_bench_index)
     sub = kinds.add_parser("search", help="run bench/queries.txt")

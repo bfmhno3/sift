@@ -2,6 +2,7 @@
 
 import io
 import json
+import shutil
 import subprocess
 import sys
 from datetime import timedelta
@@ -306,11 +307,96 @@ def test_bench_search_runs_every_query(
     assert "total for 2 queries" in out
 
 
-def test_bench_index_repeats(
+def test_bench_index_prints_a_table(
     mini_cli, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    mini_cli.main(["bench", "index", "--repeat", "2"])
-    assert "2 builds: min " in capsys.readouterr().out
+    mini_cli.main(
+        [
+            "bench",
+            "index",
+            "--repeat",
+            "2",
+            "--jobs",
+            "1,2",
+            "--mode",
+            "thread,process",
+            "--rounds",
+            "1",
+        ]
+    )
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("corpus: 8 files x 2 = 16 documents")
+    assert "GIL" in lines[1]
+    assert lines[2].split() == ["jobs", "thread", "process"]
+    row1, row2 = (line.split() for line in lines[3:])
+    assert row1[0] == "1" and row1[2:4] == ["s", "1.00x"]
+    assert row1[1] == row1[4] and row1[5:] == ["s", "1.00x"]
+    assert row2[0] == "2" and row2[3].endswith("x")
+
+
+@pytest.mark.parametrize("mode", ["process", "thread", "interp"])
+def test_index_jobs_gives_the_same_segment(
+    mini_cli, tmp_path: Path, mode: str
+) -> None:
+    serial = (tmp_path / "idx" / "segment.sft").read_bytes()
+    mini_cli.main(["index", "--full", "--jobs", "3", "--mode", mode])
+    assert (tmp_path / "idx" / "segment.sft").read_bytes() == serial
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["index", "--jobs", "0"],
+        ["index", "--jobs", "x"],
+        ["index", "--mode", "fork"],
+        ["bench", "index", "--jobs", "1,0"],
+        ["bench", "index", "--jobs", ""],
+        ["bench", "index", "--mode", "thread,fork"],
+        ["bench", "index", "--repeat", "0"],
+        ["bench", "index", "--rounds", "0"],
+    ],
+)
+def test_bad_parallel_options_exit_2(args: list[str]) -> None:
+    assert run_main(*args) == 2
+
+
+def test_index_with_bad_front_matter_exits_1_in_every_mode(
+    mini_cli,
+    tmp_path: Path,
+    mini_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    corpus = tmp_path / "posts"
+    shutil.copytree(mini_root, corpus)
+    for name in ("x1.md", "x2.md"):
+        (corpus / name).write_text("---\ntitle: [oops\n---\n")
+    for mode in ("process", "thread", "interp"):
+        code = run_main(
+            "index", "--corpus", str(corpus), "--jobs", "3", "--mode", mode
+        )
+        assert code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("error: 2 files failed")
+        assert "x1.md" in err and "x2.md" in err
+
+
+def test_bench_index_without_corpus_exits_1(
+    mini_cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "sift.toml").write_text(
+        f'[index]\ncorpus = "{tmp_path / "none"}"\n', encoding="utf-8"
+    )
+    assert run_main("bench", "index", "--rounds", "1") == 1
+
+
+def test_version_and_bench_do_not_import_sqlalchemy() -> None:
+    code = (
+        "import sys, sift.cli;"
+        "assert 'sqlalchemy' not in sys.modules, 'imported';"
+        "sift.cli.build_parser()"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True)
+    assert done.returncode == 0, done.stderr
 
 
 @pytest.mark.parametrize(
@@ -481,7 +567,7 @@ def test_unwritable_log_does_not_fail_the_search(
     def broken(*args: object) -> None:
         raise SiftError("cannot log the query: secret-query-text")
 
-    monkeypatch.setattr(cli, "log_query", broken)
+    monkeypatch.setattr("sift.storage.db.log_query", broken)
     mini_cli.main(["search", "chain"])
     captured = capsys.readouterr()
     assert "1 hits" in captured.out

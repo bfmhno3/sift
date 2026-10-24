@@ -25,15 +25,14 @@ from sqlalchemy.exc import DatabaseError
 from sift.analysis import Pipeline, build_pipeline
 from sift.document import Document
 from sift.errors import (
-    FrontMatterError,
     IndexCorruptError,
     IndexMissingError,
     SiftError,
 )
-from sift.index import IndexWriter, InvertedIndex, Posting, PostingList
+from sift.index import InvertedIndex, Posting, PostingList
+from sift.parallel import Item, Mode, check_jobs, index_items
 from sift.storage.db import load_documents, replace_documents
 from sift.storage.manifest import (
-    Change,
     Manifest,
     load_manifest,
     plan_update,
@@ -266,25 +265,6 @@ def _read_old(
     return manifest, documents
 
 
-def _parse(corpus: Path, changes: list[Change]) -> list[Document]:
-    """Parse the changed files; raise one ExceptionGroup on failures."""
-    documents: list[Document] = []
-    errors: list[FrontMatterError] = []
-    for change in changes:
-        path = corpus / change.relpath
-        text = path.read_text(encoding="utf-8")
-        try:
-            doc = Document.from_markdown(change.entry.doc_id, path, text)
-        except FrontMatterError as error:
-            errors.append(error)
-        else:
-            documents.append(doc)
-    if errors:
-        noun = "file" if len(errors) == 1 else "files"
-        raise ExceptionGroup(f"{len(errors)} {noun} failed", errors)
-    return documents
-
-
 def _merged(
     old: Segment | None,
     old_docs: Mapping[int, Document],
@@ -325,6 +305,8 @@ def update_index(
     *,
     full: bool = False,
     compress: bool = False,
+    jobs: int = 1,
+    mode: Mode = "process",
 ) -> UpdateReport:
     """Build or update the index of corpus in index_dir.
 
@@ -334,8 +316,11 @@ def update_index(
     encoded. The index is rebuilt from scratch when full is set, when
     there is no usable index, or when the corpus path or the pipeline
     differs from the old one. Malformed front matter raises an
-    ExceptionGroup before anything is written.
+    ExceptionGroup before anything is written. The changed files are
+    parsed and analyzed by jobs workers of mode (see sift.parallel);
+    the index written is the same for every jobs and mode.
     """
+    check_jobs(jobs, mode)
     if not corpus.is_dir():
         raise SiftError(f"no corpus at {corpus}")
     pipeline = build_pipeline(pipeline_names)
@@ -350,10 +335,12 @@ def update_index(
         return UpdateReport(
             False, 0, plan.unchanged, 0, len(old_docs), header.n_terms, size
         )
-    fresh = InvertedIndex()
-    with IndexWriter(fresh, pipeline) as writer:
-        for doc in _parse(corpus, plan.reparse):
-            writer.add(doc)
+    fresh = index_items(
+        [Item(c.entry.doc_id, str(corpus / c.relpath)) for c in plan.reparse],
+        pipeline_names,
+        jobs=jobs,
+        mode=mode,
+    )
     stale = plan.stale_ids
     documents = {
         doc_id: doc for doc_id, doc in old_docs.items() if doc_id not in stale

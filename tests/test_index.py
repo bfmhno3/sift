@@ -1,5 +1,7 @@
 """Tests for sift.index: postings, posting lists, the index, writer."""
 
+import pickle
+
 import pytest
 
 from sift.document import Document
@@ -210,3 +212,91 @@ def test_remove_drops_terms_that_lose_every_posting(
     assert "chain" not in index
     assert 1 not in index.documents
     assert index.n_docs == 7
+
+
+def build(docs: list[Document]) -> InvertedIndex:
+    """Index docs with an IndexWriter."""
+    index = InvertedIndex()
+    with IndexWriter(index) as writer:
+        for doc in docs:
+            writer.add(doc)
+    return index
+
+
+def same(a: InvertedIndex, b: InvertedIndex) -> bool:
+    """Compare two indexes, term order and title index included."""
+    return (
+        list(a) == list(b)
+        and a == b
+        and list(a.title_index) == list(b.title_index)
+        and a.title_index == b.title_index
+        and a.documents == b.documents
+        and [a.doc_len(i) for i in a.documents]
+        == [b.doc_len(i) for i in b.documents]
+    )
+
+
+def test_postinglist_extend_needs_later_doc_ids() -> None:
+    pl = plist(d1=(0,), d3=(1,))
+    pl.extend(plist(d4=(2,), d9=()))
+    assert pl.doc_ids() == [1, 3, 4, 9]
+    with pytest.raises(ValueError, match="must come after"):
+        pl.extend(plist(d9=(0,)))
+    pl.extend(PostingList())
+    assert pl.doc_ids() == [1, 3, 4, 9]
+    empty = PostingList()
+    empty.extend(plist(d2=(0,)))
+    assert empty.doc_ids() == [2]
+
+
+def test_postinglist_from_sorted_keeps_the_list() -> None:
+    postings = [Posting(1, (0,)), Posting(5, ())]
+    assert PostingList.from_sorted(postings) == plist(d1=(0,), d5=())
+
+
+@pytest.mark.parametrize("cut", [0, 1, 3, 7, 8])
+def test_merge_equals_adding_in_order(
+    mini_docs: list[Document], cut: int
+) -> None:
+    head = build(mini_docs[:cut])
+    head.merge(build(mini_docs[cut:]))
+    assert same(head, build(mini_docs))
+
+
+def test_merge_refuses_overlapping_ids_and_changes_nothing(
+    mini_docs: list[Document],
+) -> None:
+    index = build(mini_docs[:4])
+    before = snapshot(index)
+    with pytest.raises(ValueError, match="must come after"):
+        index.merge(build(mini_docs[3:]))
+    assert snapshot(index) == before
+    assert sorted(index.documents) == [0, 1, 2, 3]
+
+
+def test_merge_leaves_the_other_index_usable(
+    mini_docs: list[Document],
+) -> None:
+    other = build(mini_docs[4:])
+    before = snapshot(other)
+    build(mini_docs[:4]).merge(other)
+    assert snapshot(other) == before
+
+
+def test_pickle_roundtrip_is_equal(mini_docs: list[Document]) -> None:
+    index = build(mini_docs)
+    index.terms_with_prefix("c")  # fills the sorted-terms cache
+    clone = pickle.loads(pickle.dumps(index))
+    assert same(clone, index)
+    assert clone.terms_with_prefix("c") == index.terms_with_prefix("c")
+    assert clone.avg_doc_len == index.avg_doc_len
+
+
+def test_unpickled_index_accepts_more_documents(
+    mini_docs: list[Document],
+) -> None:
+    clone = pickle.loads(pickle.dumps(build(mini_docs[:5])))
+    with IndexWriter(clone) as writer:
+        for doc in mini_docs[5:]:
+            writer.add(doc)
+    assert same(clone, build(mini_docs))

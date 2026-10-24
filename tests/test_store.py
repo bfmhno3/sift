@@ -13,6 +13,7 @@ from sift.analysis import build_pipeline
 from sift.corpus import iter_documents
 from sift.errors import IndexCorruptError, IndexMissingError, SiftError
 from sift.index import IndexWriter, InvertedIndex
+from sift.parallel import Mode
 from sift.search import Searcher
 from sift.storage.db import (
     DocumentRow,
@@ -435,3 +436,61 @@ def test_locked_database_is_not_renamed(
     assert not (index_dir / "sift.db.corrupt").exists()
     names, documents = load_documents(index_dir / DB)
     assert len(documents) == 8
+
+
+@pytest.mark.parametrize("mode", ["process", "thread", "interp"])
+def test_parallel_build_is_byte_identical_to_serial(
+    corpus: Path, index_dir: Path, tmp_path: Path, mode: Mode
+) -> None:
+    serial = tmp_path / "serial"
+    update_index(corpus, serial, NAMES)
+    update_index(corpus, index_dir, NAMES, jobs=3, mode=mode)
+    assert (index_dir / SEGMENT).read_bytes() == (
+        serial / SEGMENT
+    ).read_bytes()
+    assert snapshot(index_dir) == snapshot(serial)
+
+
+def test_parallel_incremental_equals_a_serial_full_build(
+    corpus: Path, index_dir: Path, tmp_path: Path
+) -> None:
+    update_index(corpus, index_dir, NAMES, jobs=2, mode="thread")
+    edit(corpus / "bicycle-gears.md", "\nzymurgy chain\n")
+    (corpus / "zz-new.md").write_text(
+        '---\ntitle: New\npublished: "2026-03-01 08:00:00 +08:00"\n---\nhi\n'
+    )
+    report = update_index(corpus, index_dir, NAMES, jobs=4, mode="thread")
+    assert (report.full, report.parsed) == (False, 2)
+    fresh = tmp_path / "fresh"
+    update_index(corpus, fresh, NAMES, full=True)
+    assert (index_dir / SEGMENT).read_bytes() == (fresh / SEGMENT).read_bytes()
+    assert snapshot(index_dir) == snapshot(fresh)
+
+
+def test_parallel_bad_front_matter_writes_nothing(
+    corpus: Path, index_dir: Path
+) -> None:
+    (corpus / "broken.md").write_text("---\ntitle: [oops\n---\nx\n")
+    (corpus / "broken2.md").write_text("---\ntitle: [oops\n---\nx\n")
+    with pytest.raises(ExceptionGroup) as caught:
+        update_index(corpus, index_dir, NAMES, jobs=3, mode="thread")
+    assert caught.value.message == "2 files failed"
+    assert not (index_dir / SEGMENT).exists()
+
+
+def test_update_index_rejects_bad_jobs_before_touching_disk(
+    corpus: Path, index_dir: Path
+) -> None:
+    with pytest.raises(ValueError, match="jobs must be at least 1"):
+        update_index(corpus, index_dir, NAMES, jobs=0)
+    assert not index_dir.exists()
+
+
+def test_unreadable_file_is_a_sift_error_not_a_traceback(
+    corpus: Path, index_dir: Path
+) -> None:
+    (corpus / "bad-bytes.md").write_bytes(b"---\ntitle: \xff\n---\n")
+    with pytest.raises(ExceptionGroup) as caught:
+        update_index(corpus, index_dir, NAMES)
+    assert isinstance(caught.value.exceptions[0], SiftError)
+    assert "bad-bytes.md" in str(caught.value.exceptions[0])
