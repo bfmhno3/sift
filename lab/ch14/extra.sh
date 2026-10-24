@@ -18,8 +18,12 @@ if [ "$status" -ne 1 ]; then
     exit 1
 fi
 status=0
+# pyright prints absolute paths; strip the repo root from the saved copy.
 pyright lab/ch14/bad_types.py \
-    > out/ch14/bad_types.pyright || status=$?
+    > out/ch14/bad_types.pyright.raw || status=$?
+sed "s|$PWD/||g" out/ch14/bad_types.pyright.raw \
+    > out/ch14/bad_types.pyright
+rm out/ch14/bad_types.pyright.raw
 if [ "$status" -ne 1 ]; then
     echo "pyright exited $status on bad_types.py, expected 1" >&2
     exit 1
