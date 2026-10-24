@@ -268,9 +268,13 @@ class InvertedIndex(Mapping[str, PostingList]):
     def __getstate__(self) -> _State:
         """Return the state to pickle, with postings as plain tuples.
 
-        A Posting pickled as an object costs a Python-level call per
-        posting in both directions; (doc_id, positions) tuples go
-        through the C pickler and cost a fifth of that.
+        A Posting pickled as an object is rebuilt by a Python-level
+        call per posting. Plain (doc_id, positions) tuples stay in the
+        C pickler. On 60 posts (3.14.7): pickle.dumps took 65 ms
+        against 284 ms and pickle.loads of the bare tuples 74 ms
+        against 270 ms (about 4x). __setstate__ then builds the
+        Posting objects, so loading the whole index took 197 ms
+        against 270 ms (about 1.4x).
         """
         return (
             self.documents,

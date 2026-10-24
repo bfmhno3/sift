@@ -8,7 +8,8 @@ def main() -> None:
     print("submitting a lambda to a ProcessPoolExecutor")
     with ProcessPoolExecutor(1) as pool:
         future = pool.submit(lambda x: x * 2, 21)
-        # error: _pickle.PicklingError: Can't pickle <function <lambda>>
+        # error: _pickle.PicklingError: Can't pickle local object
+        # <function main.<locals>.<lambda> at 0x...>
         print(future.result())
 
 

@@ -53,6 +53,7 @@ a corpus copied in memory; ``sift bench index`` prints its result.
 
 import gc
 import sys
+import threading
 from collections.abc import (
     Callable,
     Generator,
@@ -173,25 +174,42 @@ def _run_ordered[T, R](
         pool.shutdown(cancel_futures=True)
 
 
+_gc_lock = threading.Lock()
+_gc_depth = 0
+_gc_was_on = False
+
+
 @contextmanager
 def gc_paused() -> Generator[None]:
     """Switch the cyclic garbage collector off inside the block.
 
     Indexing builds millions of tuples and Posting objects that live
-    until the end and form no cycles. Each young collection walks
-    them in vain: pausing the collector makes the analysis a quarter
-    faster and unpickling a worker result four times faster. The
-    state before the block comes back after it. The switch belongs to
-    the interpreter, so nested uses and worker threads are safe: only
-    the block that found the collector on turns it on again.
+    until the end and form no cycles, and each young collection walks
+    them in vain. Measured on the 123-post corpus (CPython 3.14.7):
+    analyzing chunks took 3.4 s with the collector off and 4.4 s with
+    it on; the parent's loop of unpickling 16 worker results and
+    merging them took 1.2 s off and 2.6 to 2.8 s on (about 2.2x).
+
+    The collector is one switch for the whole interpreter, so threads
+    share a depth counter under a lock. The first thread to enter
+    turns the collector off, remembering whether it was on; it stays
+    off while any thread is inside; the last thread to leave turns
+    it on again only if it was on at the start. Entries may overlap
+    and nest in any order.
     """
-    was_on = gc.isenabled()
-    gc.disable()
+    global _gc_depth, _gc_was_on
+    with _gc_lock:
+        if _gc_depth == 0:
+            _gc_was_on = gc.isenabled()
+            gc.disable()
+        _gc_depth += 1
     try:
         yield
     finally:
-        if was_on:
-            gc.enable()
+        with _gc_lock:
+            _gc_depth -= 1
+            if _gc_depth == 0 and _gc_was_on:
+                gc.enable()
 
 
 def index_chunk(items: tuple[Item, ...], names: tuple[str, ...]) -> Part:

@@ -1,7 +1,9 @@
 """Tests for sift.parallel: same index in every mode, errors, bench."""
 
+import gc
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from sift.parallel import (
     bench_index,
     check_jobs,
     fingerprint,
+    gc_paused,
     gil_enabled,
     index_items,
     read_items,
@@ -254,3 +257,70 @@ def test_bench_index_validates_its_arguments(mini_root: Path) -> None:
 
 def test_gil_enabled_is_a_bool() -> None:
     assert isinstance(gil_enabled(), bool)
+
+
+def test_gc_paused_nests_in_one_thread() -> None:
+    assert gc.isenabled()
+    with gc_paused():
+        with gc_paused():
+            assert not gc.isenabled()
+        assert not gc.isenabled()
+    assert gc.isenabled()
+
+
+def test_gc_paused_keeps_a_disabled_collector_disabled() -> None:
+    gc.disable()
+    try:
+        with gc_paused():
+            assert not gc.isenabled()
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
+
+
+def test_gc_paused_overlapping_threads_restore_the_original_state() -> None:
+    assert gc.isenabled()
+    inside = 0
+    guard = threading.Lock()
+    violations: list[str] = []
+
+    def visit(i: int) -> None:
+        nonlocal inside
+        time.sleep(0.01 * i)
+        with gc_paused():
+            with guard:
+                inside += 1
+            for _ in range(5):
+                time.sleep(0.02)
+                if gc.isenabled():
+                    violations.append(f"thread {i}: enabled while inside")
+            with guard:
+                inside -= 1
+
+    threads = [threading.Thread(target=visit, args=(i,)) for i in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert violations == []
+    assert inside == 0
+    assert gc.isenabled()
+
+
+def test_gc_paused_overlapping_threads_keep_a_disabled_collector() -> None:
+    gc.disable()
+    try:
+
+        def visit(i: int) -> None:
+            time.sleep(0.01 * i)
+            with gc_paused():
+                time.sleep(0.03)
+
+        threads = [threading.Thread(target=visit, args=(i,)) for i in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
