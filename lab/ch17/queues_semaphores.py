@@ -77,7 +77,7 @@ async def lock_event_demo() -> None:
         else:
             value = counter
             await asyncio.sleep(0)
-            counter = value + 1
+            counter = value + 1  # BAD: another task ran in between
 
     for use_lock in (False, True):
         counter = 0

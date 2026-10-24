@@ -65,30 +65,44 @@ class Handler(BaseHTTPRequestHandler):
             docs = self.server.searcher.index.n_docs
             self.reply(200, {"status": "ok", "docs": docs})
         elif url.path == "/search":
-            params = parse_qs(url.query)
-            self.search(params.get("q", [""])[0], params.get("limit", [""])[0])
+            params = parse_qs(url.query, keep_blank_values=True)
+            self.search(
+                params.get("q", [""])[0], params.get("limit", [None])[0]
+            )
         else:
             self.reply(404, {"error": f"no route for {url.path}"})
 
-    def search(self, query: str, limit_text: str) -> None:
-        """Run the query in this thread, one search at a time."""
+    def search(self, query: str, limit_text: str | None) -> None:
+        """Run the query in this thread, one search at a time.
+
+        The errors have the status and the JSON body of the asyncio
+        server, so the two can be compared byte for byte.
+        """
         if not query.strip():
             self.reply(400, {"error": "missing query parameter q"})
             return
-        try:
-            limit = (
-                Config.limit.validate(int(limit_text))
-                if limit_text
-                else self.server.config.limit
-            )
-        except ConfigError, ValueError:
-            self.reply(400, {"error": "bad limit"})
-            return
+        limit = self.server.config.limit
+        if limit_text is not None:
+            if not (limit_text.isascii() and limit_text.isdecimal()):
+                self.reply(400, {"error": "limit must be an integer"})
+                return
+            try:
+                limit = Config.limit.validate(int(limit_text))
+            except ConfigError as error:
+                self.reply(400, {"error": str(error)})
+                return
         try:
             with self.server.lock:
                 result = self.server.searcher.search(query, limit)
         except QuerySyntaxError as error:
-            self.reply(400, {"error": str(error)})
+            self.reply(
+                400,
+                {
+                    "error": str(error),
+                    "query": error.query,
+                    "position": error.position,
+                },
+            )
             return
         self.reply(200, search_payload(result))
 

@@ -418,6 +418,7 @@ def test_version_and_bench_do_not_import_sqlalchemy() -> None:
         ["serve", "--raw", "--port", "x"],
         ["serve", "--raw", "--port", "-1"],
         ["serve", "--raw", "--port", "65536"],
+        ["serve", "--raw", "--max-pending", "0"],
     ],
 )
 def test_bad_usage_exits_2(args: list[str]) -> None:

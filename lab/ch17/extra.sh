@@ -116,10 +116,76 @@ inspect_server pstree | tee out/ch17/asyncio_pstree.txt
 # A search costs 5 to 20 ms with limit=1 (the snippets of ten hits cost
 # ten times more), all of it CPU under the GIL. /health costs nothing:
 # it measures only how each server handles 100 connections at once.
-start_server raw python3 -m sift serve --raw --port 0 --quiet
+#
+# The default cap of 32 pending searches would answer 503 to most of
+# the 100 clients; lift it, as the threaded server has no cap
+start_server raw python3 -m sift serve --raw --port 0 --quiet \
+    --max-pending 128
 raw_pid=$server_pid raw_port=$server_port
 start_server threaded python3 lab/ch17/threaded_http_server.py --port 0
 threaded_pid=$server_pid threaded_port=$server_port
+
+# compare_bodies.sh: the same 15 requests to both servers; status and
+# JSON must be identical (took_ms differs by nature). The threaded
+# server has no /docs route, so /docs is not part of it.
+{
+    python3 - "$raw_port" "$threaded_port" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+PATHS = [
+    "/health",
+    "/search?q=rust&limit=1",
+    "/search?q=kalman+filter&limit=2",
+    "/search?q=%22device+tree%22&limit=1",
+    "/search?q=%E5%A5%87%E5%BC%82%E5%80%BC&limit=1",
+    "/search?q=owner*&limit=1",
+    "/search",
+    "/search?q=",
+    "/search?q=rust&limit=0",
+    "/search?q=rust&limit=101",
+    "/search?q=rust&limit=x",
+    "/search?q=rust&limit=",
+    "/search?q=(rust",
+    "/search?q=rust+AND",
+    "/nope",
+]
+
+
+def ask(port: str, path: str) -> tuple[int, dict[str, object]]:
+    """Return the status and the JSON body, without took_ms."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    body = json.loads(raw)
+    body.pop("took_ms", None)
+    return status, body
+
+
+def main() -> None:
+    """Compare the two servers on every path."""
+    raw_port, threaded_port = sys.argv[1:]
+    same = 0
+    for path in PATHS:
+        raw = ask(raw_port, path)
+        threaded = ask(threaded_port, path)
+        verdict = "identical" if raw == threaded else "DIFFERENT"
+        same += raw == threaded
+        print(f"  {verdict:<9} {raw[0]} {path}")
+        if raw != threaded:
+            print("    raw     :", raw)
+            print("    threaded:", threaded)
+    print(f"{same} of {len(PATHS)} identical (status and JSON, no took_ms)")
+    sys.exit(0 if same == len(PATHS) else 1)
+
+
+main()
+PY
+} | tee out/ch17/compare_bodies.txt
 
 # compare ROUNDS TITLE LOAD_ARGS...: warm up, then alternate the two
 # servers for ROUNDS rounds.

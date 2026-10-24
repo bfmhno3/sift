@@ -56,7 +56,7 @@ from sift.parallel import (
 )
 from sift.query import parse
 from sift.search import Searcher
-from sift.server.raw import serve
+from sift.server.raw import MAX_PENDING, serve
 from sift.snippet import render_plain
 from sift.util import timed
 
@@ -394,6 +394,7 @@ def run_serve(args: argparse.Namespace) -> None:
                 args.host,
                 args.port,
                 announce=lambda text: print(text, flush=True),
+                max_pending=args.max_pending,
             )
         )
 
@@ -552,13 +553,26 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument(
         "--host",
         default="127.0.0.1",
-        help="address to listen on (default: %(default)s)",
+        help=(
+            "address to listen on; there is no authentication, so a "
+            "non-loopback address exposes the index (default: "
+            "%(default)s)"
+        ),
     )
     cmd.add_argument(
         "--port",
         type=port_arg,
         default=8000,
         help="port to listen on, 0 for any free one (default: %(default)s)",
+    )
+    cmd.add_argument(
+        "--max-pending",
+        type=positive_int,
+        default=MAX_PENDING,
+        help=(
+            "searches running or waiting before the next one gets 503 "
+            "(default: %(default)s)"
+        ),
     )
     cmd.add_argument(
         "--quiet",

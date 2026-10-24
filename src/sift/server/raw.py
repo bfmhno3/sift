@@ -25,9 +25,11 @@ and no body. Any other method on a known path is 405 with an
 Statuses: 200 ok; 400 for a request the server cannot parse or a
 parameter it rejects; 404 for an unknown path or an unknown document
 id; 405 for a method other than GET and HEAD; 500 if the handler
-raises. A timeout while reading the head closes the connection with
-no answer. The error body is ``{"error": "<message>"}``; a malformed
-query adds ``"query"`` and ``"position"``.
+raises; 503 with ``Retry-After: 1`` if the server is full (see
+Limits); 504 if a search takes longer than ``SEARCH_TIMEOUT``. A
+timeout while reading the head closes the connection with no answer.
+The error body is ``{"error": "<message>"}``; a malformed query adds
+``"query"`` and ``"position"``.
 
 A request is rejected with 400 if:
 
@@ -42,17 +44,47 @@ A request is rejected with 400 if:
 * a query parameter is repeated, is not UTF-8 or has no ``=``;
 * ``limit`` is not an integer in range, or ``q`` is missing or blank;
 * the query is malformed;
-* the id in ``/docs/<id>`` is not 1 or more ASCII digits.
+* the id in ``/docs/<id>`` is not 1 or more ASCII digits (leading
+  zeros do not count: ``/docs/0001`` is document 1);
+* the server is bound to a loopback address and ``Host`` is not
+  ``127.0.0.1``, ``localhost`` or ``[::1]``, with or without a
+  ``:port``. That stops DNS rebinding: a web page cannot reach the
+  server through a name of its own. A server bound to another
+  address (``--host 0.0.0.0``) does not check ``Host``.
 
 Every response carries ``Connection: close``: one request per
-connection, so a request body is never read and cannot be mistaken
-for the next request. One log line per request goes to the
-``sift.server.raw`` logger: peer, request, status, size, time.
+connection, so a request body is never parsed and cannot be mistaken
+for the next request. If the request declares a body
+(``Content-Length`` or ``Transfer-Encoding``) or its head was too
+large, the server half-closes after the answer and reads and drops
+input for up to ``LINGER`` seconds before it closes; closing with
+unread input would send a reset that can destroy the answer. One log
+line per request goes to the ``sift.server.raw`` logger: peer,
+request, status, size, time.
 
-The search runs in ``asyncio.to_thread``: the event loop keeps
+The search runs in the default thread pool: the event loop keeps
 answering while a query runs. Searcher is not thread-safe (its LRU
 cache is not), so a lock lets one search run at a time. Under the
 GIL a query is CPU work and could not overlap with another anyway.
+
+Limits (constants of this module; ``start`` can override them):
+
+* ``MAX_CONNECTIONS`` open connections; the next one is answered 503
+  at once and closed.
+* ``MAX_PENDING`` searches running or waiting; the next one is 503.
+* ``SEARCH_TIMEOUT`` seconds from the moment a search is accepted;
+  then the answer is 504. A thread cannot be stopped, so a search
+  that already runs finishes; one that waits for the lock or the
+  pool is dropped, and so is one whose client has closed its end
+  (a client that half-closes before the answer counts as gone). A
+  dropped search is logged with status 503.
+
+Security: the server has no authentication and no TLS. By default it
+listens on 127.0.0.1; ``start`` logs a WARNING if it listens on any
+other address. The JSON of ``/search`` and ``/docs/<id>`` carries the
+path of each document as the index stores it, which is an absolute
+path if the corpus was indexed with one: that leaks the layout of the
+server's disk to every client.
 
 >>> head = b"GET /health HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n"
 >>> request = parse_head(head)
@@ -63,6 +95,7 @@ GIL a query is CPU work and could not overlap with another anyway.
 import asyncio
 import contextlib
 import errno
+import ipaddress
 import json
 import logging
 import re
@@ -87,6 +120,9 @@ MAX_HEAD = 16 * 1024  # bytes: request line, headers and blank line
 MAX_HEADERS = 100
 MAX_PARAMS = 20
 MAX_ID_DIGITS = 18  # more digits cannot be a doc id: unknown, 404
+MAX_CONNECTIONS = 256  # open connections; more get 503
+MAX_PENDING = 32  # searches running or waiting; more get 503
+SEARCH_TIMEOUT = 10.0  # seconds a search may take before 504
 READ_TIMEOUT = 10.0  # seconds to receive a complete head
 LINGER = 1.0  # seconds to drain input the server will not read
 GRACE = 5.0  # seconds a stopping server waits for open requests
@@ -96,6 +132,29 @@ END_OF_HEAD = b"\r\n\r\n"
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _TARGET = re.compile(r"/[\x21-\x7e]*")
 _VALUE = re.compile(r"[\t\x20-\x7e]*")
+_LOOPBACK_HOST = re.compile(
+    r"(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?", re.IGNORECASE
+)
+
+
+class ClientGone(Exception):
+    """A search was dropped because nobody waits for its answer."""
+
+
+def is_loopback(host: str) -> bool:
+    """Return True if host names this machine only.
+
+    >>> [is_loopback(h) for h in ("127.0.0.1", "::1", "localhost")]
+    [True, True, True]
+    >>> [is_loopback(h) for h in ("0.0.0.0", "", "10.0.0.2", "a.org")]
+    [False, False, False, False]
+    """
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class HttpError(Exception):
@@ -301,17 +360,43 @@ class RawServer:
         config: Config,
         *,
         read_timeout: float = READ_TIMEOUT,
+        check_host: bool = False,
+        max_connections: int = MAX_CONNECTIONS,
+        max_pending: int = MAX_PENDING,
+        search_timeout: float = SEARCH_TIMEOUT,
     ) -> None:
-        """Serve searcher; config gives the default hit count."""
+        """Serve searcher; config gives the default hit count.
+
+        check_host turns on the Host check of the contract; the
+        other keywords override the limits.
+        """
         self.searcher = searcher
         self.config = config
         self.read_timeout = read_timeout
+        self.check_host = check_host
+        self.max_connections = max_connections
+        self.max_pending = max_pending
+        self.search_timeout = search_timeout
         self._lock = threading.Lock()
+        self._connections = 0
+        self._pending = 0
 
-    def _search(self, query: str, limit: int) -> SearchResult:
-        """Run one search, alone: the Searcher is not thread-safe."""
+    def _search(
+        self, query: str, limit: int, gone: Callable[[], bool]
+    ) -> SearchResult:
+        """Run one search, alone: the Searcher is not thread-safe.
+
+        Runs in a pool thread. gone() is asked once the lock is held;
+        if it is true nobody waits for the answer and no work is done.
+        """
         with self._lock:
+            if gone():
+                raise ClientGone
             return self.searcher.search(query, limit)
+
+    def _search_done(self, future: object) -> None:
+        """Count a finished (or dropped) search out of the pending."""
+        self._pending -= 1
 
     def _limit(self, params: Mapping[str, str], head_only: bool) -> int:
         """Return the hit count asked for, or the configured one."""
@@ -325,15 +410,47 @@ class RawServer:
         except ConfigError as error:
             raise _bad(str(error), head_only=head_only) from None
 
-    async def _handle_search(self, request: Request) -> Response:
+    async def _handle_search(
+        self, request: Request, gone: Callable[[], bool]
+    ) -> Response:
         """Answer ``/search``."""
         head_only = request.method == "HEAD"
         query = request.params.get("q", "")
         if not query.strip():
             raise _bad("missing query parameter q", head_only=head_only)
         limit = self._limit(request.params, head_only)
+        if self._pending >= self.max_pending:
+            raise HttpError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "server busy",
+                head_only=head_only,
+                headers=(("Retry-After", "1"),),
+            )
+        abandoned = threading.Event()
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            None,
+            self._search,
+            query,
+            limit,
+            lambda: abandoned.is_set() or gone(),
+        )
+        self._pending += 1
+        future.add_done_callback(self._search_done)
         try:
-            result = await asyncio.to_thread(self._search, query, limit)
+            result = await asyncio.wait_for(future, self.search_timeout)
+        except TimeoutError:
+            raise HttpError(
+                HTTPStatus.GATEWAY_TIMEOUT,
+                f"search took more than {self.search_timeout:g} s",
+                head_only=head_only,
+            ) from None
+        except ClientGone:
+            raise HttpError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "client left before the search ran",
+                head_only=head_only,
+            ) from None
         except QuerySyntaxError as error:
             raise HttpError(
                 HTTPStatus.BAD_REQUEST,
@@ -341,6 +458,8 @@ class RawServer:
                 head_only=head_only,
                 detail={"query": error.query, "position": error.position},
             ) from None
+        finally:
+            abandoned.set()
         return Response(HTTPStatus.OK, search_payload(result))
 
     def _handle_doc(self, request: Request, text: str) -> Response:
@@ -349,8 +468,9 @@ class RawServer:
         if not (text.isascii() and text.isdecimal()):
             raise _bad("bad document id", head_only=head_only)
         doc = None
-        if len(text) <= MAX_ID_DIGITS:
-            doc = self.searcher.index.documents.get(int(text))
+        digits = text.lstrip("0") or "0"
+        if len(digits) <= MAX_ID_DIGITS:
+            doc = self.searcher.index.documents.get(int(digits))
         if doc is None:
             raise HttpError(
                 HTTPStatus.NOT_FOUND,
@@ -359,9 +479,21 @@ class RawServer:
             )
         return Response(HTTPStatus.OK, document_payload(doc))
 
-    async def dispatch(self, request: Request) -> Response:
-        """Return the response to request; raise HttpError."""
+    async def dispatch(
+        self, request: Request, gone: Callable[[], bool] = lambda: False
+    ) -> Response:
+        """Return the response to request; raise HttpError.
+
+        gone() tells a search whether its client has left.
+        """
         head_only = request.method == "HEAD"
+        host = request.headers.get("host")
+        if (
+            self.check_host
+            and host is not None
+            and not _LOOPBACK_HOST.fullmatch(host)
+        ):
+            raise _bad("Host not allowed", head_only=head_only)
         path = request.path
         known = path in ("/search", "/health") or path.startswith("/docs/")
         if not known:
@@ -377,7 +509,7 @@ class RawServer:
                 headers=(("Allow", ", ".join(METHODS)),),
             )
         if path == "/search":
-            return await self._handle_search(request)
+            return await self._handle_search(request, gone)
         if path == "/health":
             payload = {"status": "ok", "docs": self.searcher.index.n_docs}
             return Response(HTTPStatus.OK, payload)
@@ -406,7 +538,8 @@ class RawServer:
 
         The result is ``(request line, bytes, body size, status,
         unread)``, or None if there is nothing to answer. unread is
-        True if input is left that the server will not read.
+        True if the request declared a body or the head was too
+        large: input may be left that the server will not read.
         """
         line = "-"
         head_only = False
@@ -419,9 +552,16 @@ class RawServer:
             request = parse_head(head)
             line = f"{request.method} {request.target}"
             head_only = request.method == "HEAD"
-            response = await self.dispatch(request)
+            unread = (
+                "content-length" in request.headers
+                or "transfer-encoding" in request.headers
+            )
+            response = await self.dispatch(
+                request,
+                lambda: reader.at_eof() or reader.exception() is not None,
+            )
         except HttpError as error:
-            unread = error.unread
+            unread = unread or error.unread
             head_only = error.head_only
             response = Response(error.status, error.payload(), error.headers)
         except TimeoutError:
@@ -442,8 +582,21 @@ class RawServer:
         """Serve one connection: one request, one answer, close."""
         started = time.perf_counter()
         peer = writer.get_extra_info("peername")
+        full = self._connections >= self.max_connections
+        if not full:
+            self._connections += 1
+        done: tuple[str, bytes, int, HTTPStatus, bool] | None
         try:
-            done = await self.answer(reader)
+            if full:
+                response = Response(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"error": "too many connections"},
+                    (("Retry-After", "1"),),
+                )
+                wire, size = response.encode()
+                done = ("-", wire, size, response.status, True)
+            else:
+                done = await self.answer(reader)
             if done is not None:
                 line, wire, size, status, unread = done
                 writer.write(wire)
@@ -462,6 +615,8 @@ class RawServer:
         except OSError as error:
             logger.info("connection lost: %s", error)
         finally:
+            if not full:
+                self._connections -= 1
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
@@ -484,16 +639,33 @@ async def start(
     port: int = 8000,
     *,
     read_timeout: float = READ_TIMEOUT,
+    max_connections: int = MAX_CONNECTIONS,
+    max_pending: int = MAX_PENDING,
+    search_timeout: float = SEARCH_TIMEOUT,
 ) -> asyncio.Server:
     """Start listening and return the server (port 0: any free port).
 
-    Raise SiftError if host and port cannot be bound, for instance
-    because the port is in use.
+    The Host check is on if host is a loopback address; a WARNING is
+    logged if it is not. Raise SiftError if host and port cannot be
+    bound, for instance because the port is in use.
     """
-    app = RawServer(searcher, config, read_timeout=read_timeout)
+    loopback = is_loopback(host)
+    app = RawServer(
+        searcher,
+        config,
+        read_timeout=read_timeout,
+        check_host=loopback,
+        max_connections=max_connections,
+        max_pending=max_pending,
+        search_timeout=search_timeout,
+    )
     try:
-        return await asyncio.start_server(
-            app.handle, host, port, limit=MAX_HEAD - len(END_OF_HEAD)
+        server = await asyncio.start_server(
+            app.handle,
+            host,
+            port,
+            limit=MAX_HEAD - len(END_OF_HEAD),
+            backlog=max(100, max_connections),
         )
     except OSError as error:
         if error.errno == errno.EADDRINUSE:
@@ -501,6 +673,13 @@ async def start(
         else:
             reason = error.strerror or str(error)
         raise SiftError(f"cannot listen on {host}:{port}: {reason}") from None
+    if not loopback:
+        logger.warning(
+            "listening on %s: no authentication, and responses carry "
+            "document paths; anyone who can connect can read them",
+            host or "all addresses",
+        )
+    return server
 
 
 def address(server: asyncio.Server) -> tuple[str, int]:
@@ -517,6 +696,7 @@ async def serve(
     *,
     announce: Callable[[str], None],
     read_timeout: float = READ_TIMEOUT,
+    max_pending: int = MAX_PENDING,
 ) -> None:
     """Serve until SIGTERM, then stop cleanly.
 
@@ -526,7 +706,12 @@ async def serve(
     KeyboardInterrupt out of asyncio.run, as usual.
     """
     server = await start(
-        searcher, config, host, port, read_timeout=read_timeout
+        searcher,
+        config,
+        host,
+        port,
+        read_timeout=read_timeout,
+        max_pending=max_pending,
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

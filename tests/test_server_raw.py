@@ -24,12 +24,13 @@ from sift.server.raw import (
     HttpError,
     address,
     document_payload,
+    is_loopback,
     parse_head,
     serve,
     start,
 )
 
-GOOD = b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
+GOOD = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
 
 
 @dataclass
@@ -71,7 +72,7 @@ async def talk(port: int, request: bytes) -> Answer:
 
 async def get(port: int, target: str, method: str = "GET") -> Answer:
     """Send ``method target`` with a Host header and read the answer."""
-    request = f"{method} {target} HTTP/1.1\r\nHost: x\r\n\r\n"
+    request = f"{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
     return await talk(port, request.encode())
 
 
@@ -437,7 +438,7 @@ def test_head_with_a_bad_head_has_no_body(searcher: Searcher) -> None:
         assert answer.body == b""
         assert int(answer.headers["Content-Length"]) > 0
         answer = await talk(
-            port, b"HEAD /search?q HTTP/1.1\r\nHost: x\r\n\r\n"
+            port, b"HEAD /search?q HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         )
         assert answer.status == 400
         assert answer.body == b""
@@ -454,7 +455,7 @@ def test_head_with_a_bad_head_has_no_body(searcher: Searcher) -> None:
         b"BAD\r\n\r\n",
         b"GET /health\r\n\r\n",
         b"GET /health HTTP/1.1\r\n\r\n",
-        b"GET /health HTTP/3\r\nHost: x\r\n\r\n",
+        b"GET /health HTTP/3\r\nHost: 127.0.0.1\r\n\r\n",
         b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\r\n\r\n",
     ],
 )
@@ -474,7 +475,9 @@ def test_a_huge_head_gets_400_and_the_client_can_read_it(
     searcher: Searcher,
 ) -> None:
     async def check(port: int) -> None:
-        big = b"GET /health HTTP/1.1\r\nHost: x\r\nX: " + b"a" * (8 * MAX_HEAD)
+        big = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nX: " + b"a" * (
+            8 * MAX_HEAD
+        )
         answer = await talk(port, big + b"\r\n\r\n")
         assert answer.status == 400
         assert answer.json() == {"error": "request head too large"}
@@ -485,7 +488,7 @@ def test_a_huge_head_gets_400_and_the_client_can_read_it(
 
 def test_a_head_just_under_the_limit_is_served(searcher: Searcher) -> None:
     async def check(port: int) -> None:
-        prefix = b"GET /health HTTP/1.1\r\nHost: x\r\nX: "
+        prefix = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nX: "
         room = MAX_HEAD - len(prefix) - len(b"\r\n\r\n")
         assert (
             await talk(port, prefix + b"a" * room + b"\r\n\r\n")
@@ -533,12 +536,12 @@ def test_a_silent_client_is_dropped_and_not_logged(
 def test_a_request_body_is_ignored(searcher: Searcher) -> None:
     async def check(port: int) -> None:
         raw = (
-            b"POST /search HTTP/1.1\r\nHost: x\r\n"
+            b"POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\n"
             b"Content-Length: 5\r\n\r\nhello"
         )
         assert (await talk(port, raw)).status == 405
         raw = (
-            b"GET /health HTTP/1.1\r\nHost: x\r\n"
+            b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
             b"Content-Length: 5\r\n\r\nhello"
         )
         assert (await talk(port, raw)).status == 200
@@ -754,6 +757,273 @@ def test_many_clients_get_the_right_answers_one_search_at_a_time(
             assert body["query"] == words[i % 6]
             assert body["total"] == expected[words[i % 6]]
 
-    with_server(searcher, check)
+    with_server(searcher, check, max_pending=200)
     assert stats["calls"] == 120
     assert stats["peak"] == 1
+
+
+# -- bodies, Host, ids, limits ------------------------------------------
+
+
+def test_a_large_unread_body_does_not_eat_the_answer(
+    searcher: Searcher,
+) -> None:
+    async def check(port: int) -> None:
+        post = (
+            b"POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Content-Length: 1000000\r\n\r\n" + b"x" * 1_000_000
+        )
+        answer = await talk(port, post)
+        assert answer.status == 405
+        big = 5_000_000
+        get_ = (
+            b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Content-Length: %d\r\n\r\n" % big + b"x" * big
+        )
+        answer = await talk(port, get_)
+        assert answer.status == 200
+        chunked = (
+            b"POST /health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n" + b"x" * 2_000_000
+        )
+        assert (await talk(port, chunked)).status == 405
+
+    with_server(searcher, check)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "127.0.0.1:8000",
+        "localhost",
+        "LOCALHOST:80",
+        "[::1]",
+        "[::1]:65535",
+    ],
+)
+def test_loopback_hosts_are_accepted(searcher: Searcher, host: str) -> None:
+    async def check(port: int) -> None:
+        raw = f"GET /health HTTP/1.1\r\nHost: {host}\r\n\r\n".encode()
+        assert (await talk(port, raw)).status == 200
+
+    with_server(searcher, check)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "evil.example",
+        "evil.example:80",
+        "127.0.0.1.evil.example",
+        "localhost.evil.example",
+        "127.0.0.2",
+        "localhost:",
+        "localhost:123456",
+        "0.0.0.0",
+        "[::2]",
+    ],
+)
+def test_other_hosts_are_400_on_a_loopback_bind(
+    searcher: Searcher, host: str
+) -> None:
+    async def check(port: int) -> None:
+        for method in ("GET", "HEAD", "POST"):
+            raw = f"{method} /nope HTTP/1.1\r\nHost: {host}\r\n\r\n"
+            answer = await talk(port, raw.encode())
+            assert answer.status == 400
+            assert (answer.body == b"") == (method == "HEAD")
+        error = (await get(port, "/health")).status
+        assert error == 200  # the helper sends Host: 127.0.0.1
+
+    with_server(searcher, check)
+
+    # the answer says why
+    async def why(port: int) -> None:
+        raw = f"GET /health HTTP/1.1\r\nHost: {host}\r\n\r\n".encode()
+        assert (await talk(port, raw)).json() == {"error": "Host not allowed"}
+
+    with_server(searcher, why)
+
+
+def test_http_1_0_without_host_is_served_on_a_loopback_bind(
+    searcher: Searcher,
+) -> None:
+    async def check(port: int) -> None:
+        answer = await talk(port, b"GET /health HTTP/1.0\r\n\r\n")
+        assert answer.status == 200
+
+    with_server(searcher, check)
+
+
+def test_a_wildcard_bind_skips_the_host_check_and_warns(
+    searcher: Searcher, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sift.server.raw")
+
+    async def scenario() -> None:
+        server = await start(searcher, Config(), "0.0.0.0", 0)
+        try:
+            port = address(server)[1]
+            raw = b"GET /health HTTP/1.1\r\nHost: anything\r\n\r\n"
+            assert (await talk(port, raw)).status == 200
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(scenario())
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "no authentication" in warnings[0].getMessage()
+
+
+def test_a_loopback_bind_does_not_warn(
+    searcher: Searcher, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sift.server.raw")
+    with_server(searcher, lambda port: asyncio.sleep(0))
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_is_loopback() -> None:
+    assert is_loopback("127.0.0.1")
+    assert is_loopback("127.1.2.3")
+    assert is_loopback("::1")
+    assert is_loopback("localhost")
+    assert not is_loopback("")
+    assert not is_loopback("0.0.0.0")
+    assert not is_loopback("::")
+    assert not is_loopback("example.org")
+
+
+@pytest.mark.parametrize(
+    ("target", "doc_id"),
+    [
+        ("/docs/000000000000000001", 1),
+        ("/docs/" + "0" * 40 + "1", 1),
+        ("/docs/" + "0" * 5000 + "3", 3),
+        ("/docs/" + "0" * 30, 0),
+    ],
+)
+def test_zero_padded_ids_count_by_value(
+    searcher: Searcher, target: str, doc_id: int
+) -> None:
+    async def check(port: int) -> None:
+        answer = await get(port, target)
+        assert answer.status == 200
+        assert answer.json()["doc_id"] == doc_id
+
+    with_server(searcher, check)
+
+
+def test_a_long_id_by_value_is_404(searcher: Searcher) -> None:
+    async def check(port: int) -> None:
+        for text in ("1" + "0" * 18, "0" * 30 + "9" * 19):
+            assert (await get(port, "/docs/" + text)).status == 404
+
+    with_server(searcher, check)
+
+
+# -- limits ---------------------------------------------------------------
+
+
+def test_pending_searches_are_capped(
+    searcher: Searcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    search, stats = slow_search(searcher, 0.3)
+    monkeypatch.setattr(searcher, "search", search)
+
+    async def check(port: int) -> None:
+        answers = await asyncio.gather(
+            *[get(port, "/search?q=chain") for _ in range(8)]
+        )
+        codes = sorted(a.status for a in answers)
+        assert codes == [200] * 2 + [503] * 6
+        busy = next(a for a in answers if a.status == 503)
+        assert busy.headers["Retry-After"] == "1"
+        assert busy.json() == {"error": "server busy"}
+        # the burst is over: a normal request works again
+        assert (await get(port, "/search?q=chain")).status == 200
+        assert (await talk(port, GOOD)).status == 200
+
+    with_server(searcher, check, max_pending=2)
+    assert stats["calls"] == 3
+
+
+def test_a_search_over_the_deadline_is_504(
+    searcher: Searcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    search, _ = slow_search(searcher, 0.5)
+    monkeypatch.setattr(searcher, "search", search)
+
+    async def check(port: int) -> None:
+        answer = await get(port, "/search?q=chain")
+        assert answer.status == 504
+        assert "took more than 0.1 s" in str(answer.json()["error"])
+        assert (await talk(port, GOOD)).status == 200
+        head = await get(port, "/search?q=chain", "HEAD")
+        assert head.status == 504
+        assert head.body == b""
+
+    with_server(searcher, check, search_timeout=0.1)
+
+
+def test_searches_of_clients_that_left_are_skipped(
+    searcher: Searcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    search, stats = slow_search(searcher, 0.4)
+    monkeypatch.setattr(searcher, "search", search)
+
+    async def check(port: int) -> None:
+        first = asyncio.create_task(get(port, "/search?q=chain"))
+        await asyncio.sleep(0.1)  # the first search holds the lock
+        for _ in range(5):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(
+                b"GET /search?q=tea HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+            )
+            await writer.drain()
+            writer.close()
+        assert (await first).status == 200
+        await asyncio.sleep(0.5)
+        assert (await get(port, "/search?q=river")).status == 200
+
+    with_server(searcher, check)
+    assert stats["calls"] == 2  # the first, and the last; not the five
+
+
+def test_a_timed_out_search_that_never_started_is_not_run(
+    searcher: Searcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    search, stats = slow_search(searcher, 0.15)
+    monkeypatch.setattr(searcher, "search", search)
+
+    async def check(port: int) -> None:
+        answers = await asyncio.gather(
+            *[get(port, "/search?q=chain") for _ in range(4)]
+        )
+        assert sorted(a.status for a in answers) == [200, 504, 504, 504]
+        await asyncio.sleep(0.8)
+
+    with_server(searcher, check, search_timeout=0.2)
+    # the second was running at 0.2 s and finishes; the others, whose
+    # clients got 504 by then, never run
+    assert stats["calls"] == 2
+
+
+def test_extra_connections_get_503(searcher: Searcher) -> None:
+    async def check(port: int) -> None:
+        idle = [
+            await asyncio.open_connection("127.0.0.1", port) for _ in range(2)
+        ]
+        await asyncio.sleep(0.05)
+        answer = await talk(port, GOOD)
+        assert answer.status == 503
+        assert answer.headers["Retry-After"] == "1"
+        assert answer.json() == {"error": "too many connections"}
+        for _, writer in idle:
+            writer.close()
+        await asyncio.sleep(0.1)
+        assert (await talk(port, GOOD)).status == 200
+
+    with_server(searcher, check, max_connections=2)

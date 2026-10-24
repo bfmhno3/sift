@@ -5,8 +5,10 @@ paths are the queries of --queries as /search?q=... (with &limit=N if
 --limit is given), or the single path of --target.
 
 --port N targets a server on localhost. Without it the script starts
-a stub server that answers {} at once in this process: that measures
-the generator itself, and the ceiling of any server it can load.
+a stub server that answers {} at once in this process. Generator and
+stub then share one event loop, so the number is a floor for the
+generator, not a ceiling for servers: a stub in its own process
+answers faster.
 """
 
 import argparse
