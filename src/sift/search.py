@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sift.analysis import Pipeline, build_pipeline
+from sift.cache import LRUCache
 from sift.index import IndexView, PostingList
 from sift.query import (
     And,
@@ -67,16 +68,25 @@ class Searcher:
         k1: float = 1.2,
         b: float = 0.75,
         pipeline: Pipeline | None = None,
+        cache_size: int = 256,
     ) -> None:
         """Keep the index and the BM25 parameters.
 
         pipeline must be the one that built the index; it defaults to
-        build_pipeline().
+        build_pipeline(). cache_size is how many analyzed query words
+        the LRU cache of ``term_cache`` keeps.
         """
         self.index = index
         self.k1 = k1
         self.b = b
         self.pipeline = pipeline or build_pipeline()
+        self.term_cache = LRUCache[str, tuple[str, ...]](cache_size)
+
+    def _terms(self, text: str) -> tuple[str, ...]:
+        """Return the index terms of a query word, cached."""
+        return self.term_cache.get_or_set(
+            text, lambda word: tuple(self.pipeline.terms(word))
+        )
 
     def _leaf(self, leaf: Term | Prefix | Phrase) -> PostingList:
         """Return the postings of one scoring leaf."""
@@ -90,12 +100,12 @@ class Searcher:
         for leaf in leaves:
             match leaf:
                 case Term(text):
-                    terms.update(self.pipeline.terms(text))
+                    terms.update(self._terms(text))
                 case Phrase(words):
                     for word in words:
-                        terms.update(self.pipeline.terms(word))
+                        terms.update(self._terms(word))
                 case Prefix(text):
-                    tokens = self.pipeline.terms(text)
+                    tokens = self._terms(text)
                     terms.update(tokens[:-1])
                     if tokens:
                         found = self.index.terms_with_prefix(tokens[-1])

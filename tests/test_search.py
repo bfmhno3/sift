@@ -101,3 +101,20 @@ def test_syntax_error_propagates(searcher: Searcher) -> None:
 def test_chinese_query(searcher: Searcher) -> None:
     result = searcher.search("编译器")
     assert [h.doc_id for h in result.hits] == [3]
+
+
+def test_query_terms_are_cached_per_word(mini_index: InvertedIndex) -> None:
+    searcher = Searcher(mini_index)
+    first = searcher.search("chain tool")
+    assert searcher.term_cache.misses == 2
+    again = searcher.search("chain tool")
+    assert searcher.term_cache.hits == 2
+    assert [h.snippet for h in again.hits] == [h.snippet for h in first.hits]
+
+
+def test_a_tiny_cache_still_gives_the_same_snippets(
+    mini_index: InvertedIndex,
+) -> None:
+    plain = Searcher(mini_index, cache_size=1).search("chain tool")
+    cached = Searcher(mini_index).search("chain tool")
+    assert [h.snippet for h in plain.hits] == [h.snippet for h in cached.hits]
