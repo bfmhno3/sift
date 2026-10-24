@@ -116,7 +116,7 @@ def positive_int(text: str) -> int:
 
 
 def limit_arg(text: str) -> int:
-    """Convert text to a hit count, with the rules of ``Config.limit``."""
+    """Convert text to a hit count, by the rules of Config.limit."""
     try:
         number = int(text)
     except ValueError:

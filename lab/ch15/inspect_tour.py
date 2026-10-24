@@ -53,8 +53,10 @@ def main() -> None:
             continue
         print(f"  {name:10} function={inspect.isfunction(value)}")
     print("-- getdoc, getmodule, ismethod")
-    print("  ", inspect.getdoc(bm25).splitlines()[0])  # type: ignore[union-attr]
-    print("  ", inspect.getmodule(bm25).__name__)  # type: ignore[union-attr]
+    doc = inspect.getdoc(bm25) or ""
+    module = inspect.getmodule(bm25)
+    print("  ", doc.splitlines()[0])
+    print("  ", module.__name__ if module else None)
     print("  ", inspect.ismethod(Config.limit.validate))
     print("  ", inspect.ismethod(Setting.validate))
     print("-- frames")

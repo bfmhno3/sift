@@ -69,6 +69,13 @@ def test_search_limit(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
     assert out.count(".md") == 1
 
 
+def test_search_limit_accepts_the_maximum(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mini_cli.main(["search", "--limit", "100", "tea", "OR", "bicycle"])
+    assert capsys.readouterr().out.count(".md") >= 1
+
+
 def test_search_json(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
     mini_cli.main(["search", "--json", "chain", "tool"])
     data = json.loads(capsys.readouterr().out)

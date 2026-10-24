@@ -54,7 +54,8 @@ def lookup(obj: object, name: str) -> Any:
             found = vars(base)[name]
             break
     if found is not _MISSING and hasattr(type(found), "__set__"):
-        return type(found).__get__(found, obj, cls)  # 1. data descriptor
+        # 1. data descriptor
+        return type(found).__get__(found, obj, cls)
     if name in vars(obj):
         return vars(obj)[name]  # 2. instance dict
     if found is not _MISSING:

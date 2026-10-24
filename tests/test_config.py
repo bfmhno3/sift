@@ -321,3 +321,57 @@ def test_assignment_after_construction_is_validated() -> None:
     with pytest.raises(ConfigError, match="limit"):
         config.limit = 0
     assert config.limit == 10
+
+
+def test_nan_is_refused() -> None:
+    nan = float("nan")
+    with pytest.raises(ConfigError, match="between 0 and 1"):
+        Config(b=nan)
+    with pytest.raises(ConfigError, match="must be a number"):
+        Config(k1=nan)
+    config = Config()
+    with pytest.raises(ConfigError, match="between 0 and 1"):
+        config.b = nan
+    assert config.b == 0.75
+
+
+def test_nan_in_toml(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"sift\.toml: \[search\] b"):
+        load_config(write(tmp_path, "[search]\nb = nan\n"))
+    with pytest.raises(ConfigError, match=r"\[search\] k1 must be a number"):
+        load_config(write(tmp_path, "[search]\nk1 = nan\n"))
+
+
+def test_infinity_for_k1_is_accepted() -> None:
+    assert Config(k1=float("inf")).k1 == float("inf")
+
+
+def test_huge_int_is_a_config_error_not_an_overflow(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="k1 must be a number"):
+        Config(k1=10**400)
+    text = "[search]\nk1 = " + "9" * 400 + "\n"
+    with pytest.raises(ConfigError, match="k1 must be a number"):
+        load_config(write(tmp_path, text))
+
+
+def test_plain_attribute_shadows_a_setting() -> None:
+    class Shadow(Config):
+        limit = 5
+
+    assert "limit" not in Shadow._settings
+    assert "limit" in Config._settings
+    assert Shadow().limit == 5
+    assert "limit" not in Shadow().values()
+    assert Config().limit == 10
+
+
+def test_setting_names_may_not_collide_with_methods() -> None:
+    with pytest.raises(TypeError, match="Settings.values"):
+
+        class Bad(Settings):
+            values = Setting(int, default=1, section="s")
+
+    with pytest.raises(TypeError, match="Settings.from_toml"):
+
+        class Bad2(Settings):
+            from_toml = Setting(int, default=1, section="s")

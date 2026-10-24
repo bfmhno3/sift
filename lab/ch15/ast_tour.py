@@ -1,6 +1,7 @@
 """ast: parse, dump, rewrite x ** 2 into x * x, compile, exec."""
 
 import ast
+from typing import Any
 
 SOURCE = """\
 def area(x):
@@ -41,14 +42,15 @@ def main() -> None:
     print("-- rewrites:", transformer.count)
     print(ast.unparse(new_tree))
     print("-- compile + exec")
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     code = compile(new_tree, "<rewritten>", "exec")
     exec(code, namespace)
     area = namespace["area"]
-    print("  area(7) =", area(7))  # type: ignore[operator]
-    original: dict[str, object] = {}
+    print("  area(7) =", area(7))
+    original: dict[str, Any] = {}
     exec(compile(SOURCE, "<original>", "exec"), original)
-    print("  same answer:", area(7) == original["area"](7))  # type: ignore[operator]
+    expected = original["area"](7)
+    print("  same answer:", area(7) == expected)
     print("-- literal_eval on a safe literal")
     print(" ", ast.literal_eval("{'a': [1, 2, (3, 4)]}"))
     print("-- walk: names used")

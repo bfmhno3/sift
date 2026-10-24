@@ -56,7 +56,7 @@ class SettingBase:
         return f"[{self.section}] {self.key}"
 
     def parse(self, raw: object) -> object:
-        """Return the value for a raw TOML value, or raise ConfigError."""
+        """Return the setting for a raw TOML value, or raise."""
         raise NotImplementedError
 
 
@@ -142,8 +142,17 @@ class Setting[T](SettingBase):
         if isinstance(value, bool) and self.kind is not bool:
             raise ConfigError(f"{self.label} must be {self._noun()}")
         if self.kind is float and isinstance(value, int):
-            value = float(value)
+            try:
+                value = float(value)
+            except OverflowError:
+                raise ConfigError(
+                    f"{self.label} must be {self._noun()}"
+                ) from None
         if not isinstance(value, self.kind):
+            raise ConfigError(f"{self.label} must be {self._noun()}")
+        if value != value:  # NaN passes every comparison below
+            if self.min is not None and self.max is not None:
+                raise self._out_of_range()
             raise ConfigError(f"{self.label} must be {self._noun()}")
         if isinstance(value, _NUMBER_TYPES):
             below = self.min is not None and value < self.min
@@ -239,7 +248,14 @@ class Settings:
         found: dict[str, SettingBase] = {}
         for base in reversed(cls.__mro__):
             for name, value in vars(base).items():
-                if isinstance(value, SettingBase):
+                if not isinstance(value, SettingBase):
+                    found.pop(name, None)  # a plain attribute shadows
+                elif hasattr(Settings, name):
+                    raise TypeError(
+                        f"{cls.__name__}.{name}: the name is taken "
+                        f"by Settings.{name}"
+                    )
+                else:
                     found[name] = value
         cls._settings = found
 
@@ -307,7 +323,7 @@ class Settings:
 
 
 class Config(Settings):
-    """The settings of Sift; the defaults match the shipped sift.toml."""
+    """The settings of Sift; defaults match the shipped sift.toml."""
 
     corpus = PathSetting(default=Path("corpus/posts"), section="index")
     index_path = PathSetting(
