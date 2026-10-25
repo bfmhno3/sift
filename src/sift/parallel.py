@@ -83,6 +83,7 @@ from sift.index import IndexWriter, InvertedIndex
 Mode = Literal["process", "thread", "interp"]
 MODES: tuple[Mode, ...] = get_args(Mode)
 CHUNKS_PER_JOB = 4
+PROGRESS_CHUNKS = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,29 +263,49 @@ def index_items(
     *,
     jobs: int = 1,
     mode: Mode = "process",
+    progress: Callable[[int, int], None] | None = None,
 ) -> InvertedIndex:
     """Return the index of items, built by jobs workers of mode.
 
     The items must come in increasing doc_id order. See the module
     docstring for the guarantees and the errors.
+
+    progress, if given, is called as ``progress(done, total)`` in the
+    calling thread after every chunk is merged: done items of total.
+    A serial build then runs in PROGRESS_CHUNKS chunks instead of one
+    so that the count moves; the index is the same.
     """
     check_jobs(jobs, mode)
     ordered = list(items)
     names = tuple(pipeline_names)
-    chunks = split(ordered, jobs * CHUNKS_PER_JOB if jobs > 1 else 1)
+    if jobs > 1:
+        count = jobs * CHUNKS_PER_JOB
+    else:
+        count = PROGRESS_CHUNKS if progress is not None else 1
+    chunks = split(ordered, count)
     merged: InvertedIndex | None = None
     errors: list[SiftError] = []
+    done = 0
     with gc_paused():
-        for part in run_ordered(
-            partial(index_chunk, names=names), chunks, jobs=jobs, mode=mode
+        for chunk, part in zip(
+            chunks,
+            run_ordered(
+                partial(index_chunk, names=names),
+                chunks,
+                jobs=jobs,
+                mode=mode,
+            ),
+            strict=True,
         ):
             errors.extend(part.errors)
-            if errors:
-                continue
-            if merged is None:
-                merged = part.index
-            else:
-                merged.merge(part.index)
+            if not errors:
+                if merged is None:
+                    merged = part.index
+                else:
+                    merged.merge(part.index)
+            done += len(chunk)
+            if progress is not None:
+                progress(done, len(ordered))
     if errors:
         noun = "file" if len(errors) == 1 else "files"
         raise ExceptionGroup(f"{len(errors)} {noun} failed", errors)

@@ -8,6 +8,7 @@ import logging
 import sys
 
 _FORMAT = "%(levelname)s %(name)s: %(message)s"
+_RICH_FORMAT = "%(name)s: %(message)s"
 
 
 def setup_logging(level: str = "WARNING", *, rich: bool = False) -> None:
@@ -15,16 +16,32 @@ def setup_logging(level: str = "WARNING", *, rich: bool = False) -> None:
 
     level is a level name such as ``"DEBUG"`` or ``"WARNING"``; an
     unknown name raises ValueError. Calling it again replaces the
-    handler, it never adds a second one. rich is accepted and
-    ignored: the rich handler arrives in chapter 19.
+    handler, it never adds a second one. With rich the handler is
+    rich.logging.RichHandler (coloured level, aligned columns, no
+    time or path); without it, a plain StreamHandler with the format
+    ``LEVEL name: message``. The command line passes rich only when
+    stderr is a terminal.
     """
     number = logging.getLevelNamesMapping().get(level.upper())
     if number is None:
         raise ValueError(f"unknown log level: {level!r}")
     logger = logging.getLogger("sift")
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(_FORMAT))
+    for old in logger.handlers[:]:
+        logger.removeHandler(old)
+    handler: logging.Handler
+    if rich:
+        from rich.console import Console
+        from rich.logging import RichHandler
+
+        handler = RichHandler(
+            console=Console(stderr=True),
+            show_time=False,
+            show_path=False,
+            markup=False,
+        )
+        handler.setFormatter(logging.Formatter(_RICH_FORMAT))
+    else:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(_FORMAT))
     logger.addHandler(handler)
     logger.setLevel(number)

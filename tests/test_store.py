@@ -467,6 +467,47 @@ def test_parallel_incremental_equals_a_serial_full_build(
     assert snapshot(index_dir) == snapshot(fresh)
 
 
+@pytest.mark.parametrize("jobs", [1, 3])
+def test_progress_reports_the_files_that_are_parsed(
+    corpus: Path, index_dir: Path, tmp_path: Path, jobs: int
+) -> None:
+    calls: list[tuple[int, int]] = []
+    update_index(
+        corpus,
+        index_dir,
+        NAMES,
+        jobs=jobs,
+        mode="thread",
+        progress=lambda done, total: calls.append((done, total)),
+    )
+    assert calls[-1] == (8, 8)
+    plain = tmp_path / "plain"
+    update_index(corpus, plain, NAMES)
+    assert (index_dir / SEGMENT).read_bytes() == (plain / SEGMENT).read_bytes()
+
+
+def test_progress_is_silent_when_nothing_changed(
+    corpus: Path, index_dir: Path
+) -> None:
+    update_index(corpus, index_dir, NAMES)
+    calls: list[tuple[int, int]] = []
+    update_index(
+        corpus,
+        index_dir,
+        NAMES,
+        progress=lambda done, total: calls.append((done, total)),
+    )
+    assert calls == []
+    edit(corpus / "bicycle-gears.md", "\nzymurgy\n")
+    update_index(
+        corpus,
+        index_dir,
+        NAMES,
+        progress=lambda done, total: calls.append((done, total)),
+    )
+    assert calls[-1] == (1, 1)
+
+
 def test_parallel_bad_front_matter_writes_nothing(
     corpus: Path, index_dir: Path
 ) -> None:

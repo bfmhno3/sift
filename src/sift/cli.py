@@ -1,8 +1,13 @@
 """The command line of Sift: ``sift <command>`` and ``python -m sift``.
 
+Built with typer: the type hints of the ``run_*`` functions are the
+options and arguments, ``Annotated[..., typer.Option(...)]`` adds the
+help and the checks.
+
 Exit codes: 0 ok (also when a query has no hits), 2 usage error
-(argparse), 3 malformed query, 4 index missing, 1 any other
-SiftError.
+(click, the library under typer), 3 malformed query, 4 index missing,
+1 any other SiftError. The mapping lives in ``SiftGroup.invoke``, so
+``sift`` and the typer test runner see the same codes.
 
 ``sift index`` writes the index directory (``.sift`` by default, the
 ``[index] path`` of ``sift.toml``) and the other commands read it:
@@ -14,60 +19,152 @@ index over HTTP with FastAPI on uvicorn (``sift.server.app``, the
 ``web`` extra); ``sift serve --raw`` uses the hand-written asyncio
 server of ``sift.server.raw`` instead.
 
-The storage modules (and with them SQLAlchemy) are imported by the
-commands that use them, so ``sift --version`` and ``sift bench index``
-start without that cost and run on an interpreter that lacks it.
+Output goes through rich (``sift.render``) only on a terminal; in a
+pipe, with ``--json`` or with NO_COLOR set it is the plain text of
+chapter 18. ``--debug`` logs at DEBUG level and prints uncaught
+exceptions, and the errors below, as rich tracebacks.
+
+The storage modules (and with them SQLAlchemy), asyncio and rich are
+imported by the commands that use them, so ``sift --version`` and
+``sift bench index`` start without that cost and run on an
+interpreter that lacks SQLAlchemy.
 """
 
-import argparse
-import asyncio
-import json
 import os
-import platform
-import shlex
-import subprocess
 import sys
 import time
 from collections import Counter
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
-from sift import __version__
-from sift.analysis import Pipeline, build_pipeline
-from sift.config import Config, load_config
-from sift.corpus import iter_documents
-from sift.document import Document
+import click
+import typer
+from typer.core import TyperGroup
+
+from sift import render
 from sift.errors import (
     ConfigError,
     IndexMissingError,
     QuerySyntaxError,
     SiftError,
 )
-from sift.index import IndexWriter, InvertedIndex
 from sift.log import setup_logging
-from sift.parallel import (
-    MODES,
-    Mode,
-    Timing,
-    bench_index,
-    gil_enabled,
-    read_items,
-    replicate,
-)
-from sift.query import parse
-from sift.search import Searcher
-from sift.server.raw import MAX_PENDING
-from sift.server.raw import serve as serve_raw
-from sift.snippet import render_plain
 from sift.util import timed
 
 if TYPE_CHECKING:
+    from sift.analysis import Pipeline
+    from sift.config import Config
+    from sift.document import Document
+    from sift.index import InvertedIndex
+    from sift.parallel import Mode, Timing
+    from sift.search import Searcher
     from sift.storage.store import SegmentIndex
 
 CORPUS = Path("corpus/posts")
 QUERIES = Path("bench/queries.txt")
+DEBUG_KEY = "sift.debug"
+MODE_NAMES = "process, thread or interp"
+
+
+class SiftGroup(TyperGroup):
+    """The root command group: Sift errors become exit codes.
+
+    A usage error (bad option, bad value) is raised by click while it
+    parses the arguments and leaves through typer, which prints it and
+    exits 2. The errors of Sift are caught here, around the whole
+    invocation, because they come out of the command functions.
+    """
+
+    def invoke(self, ctx: click.Context) -> object:
+        """Run the command; print a Sift error and exit with its code."""
+        try:
+            return super().invoke(ctx)
+        except QuerySyntaxError as error:
+            fail(ctx, error.render(), 3)
+        except IndexMissingError as error:
+            fail(ctx, f"sift: {error}", 4)
+        except SiftError as error:
+            fail(ctx, f"error: {error}", 1)
+        except KeyboardInterrupt:
+            fail(ctx, "interrupted", 130, trace=False)
+        except ExceptionGroup as group:
+            _, other = group.split(SiftError)
+            if other is not None:
+                raise
+            lines = [f"error: {group.message}"]
+            lines += [f"  {failure}" for failure in group.exceptions]
+            fail(ctx, "\n".join(lines), 1)
+
+
+def fail(
+    ctx: click.Context, message: str, code: int, *, trace: bool = True
+) -> NoReturn:
+    """Print message on stderr and exit with code.
+
+    Call it from an ``except`` block. With --debug the exception
+    being handled is first printed as a rich traceback.
+    """
+    if trace and ctx.meta.get(DEBUG_KEY):
+        render.print_traceback()
+    print(message, file=sys.stderr)
+    ctx.exit(code)
+
+
+app = typer.Typer(
+    cls=SiftGroup,
+    name="sift",
+    help="Search the Markdown posts of a blog.",
+    epilog=(
+        "Exit codes: 0 ok, 2 usage, 3 bad query, 4 no index, 1 other error."
+    ),
+    no_args_is_help=True,
+    pretty_exceptions_enable=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+bench_app = typer.Typer(
+    help="Time indexing or searching.", no_args_is_help=True
+)
+app.add_typer(bench_app, name="bench")
+
+
+def show_version(value: bool) -> None:
+    """Print the version and exit, for the eager ``--version``."""
+    if value:
+        from sift import __version__
+
+        typer.echo(f"sift {__version__}")
+        raise typer.Exit
+
+
+@app.callback()
+def run_root(
+    ctx: typer.Context,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=show_version,
+            is_eager=True,
+            help="Show the version and exit.",
+        ),
+    ] = False,
+    debug: Annotated[
+        bool,
+        typer.Option(
+            "--debug",
+            help="Log at DEBUG level and print tracebacks with rich.",
+        ),
+    ] = False,
+) -> None:
+    """Set up logging, and the rich traceback with --debug."""
+    ctx.meta[DEBUG_KEY] = debug
+    setup_logging(
+        "DEBUG" if debug else "WARNING", rich=render.wants_rich(sys.stderr)
+    )
+    if debug:
+        render.install_traceback()
 
 
 def check_corpus(root: Path) -> None:
@@ -93,6 +190,9 @@ def load_index(
     no index is returned, with keep_going they are logged as warnings
     and skipped (their doc_ids stay unused).
     """
+    from sift.corpus import iter_documents
+    from sift.index import IndexWriter, InvertedIndex
+
     check_corpus(root)
     documents: list[Document] = []
     index = InvertedIndex()
@@ -119,77 +219,67 @@ def require_index(directory: Path) -> None:
         )
 
 
-def positive_int(text: str) -> int:
-    """Convert text to an int greater than zero, for argparse."""
+def int_arg(text: str) -> int:
+    """Convert text to an int; raise BadParameter if it is not one."""
     try:
-        number = int(text)
+        return int(text)
     except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"invalid int value: {text!r}"
-        ) from None
+        raise typer.BadParameter(f"invalid int value: {text!r}") from None
+
+
+def positive_int(text: str) -> int:
+    """Convert text to an int greater than zero."""
+    number = int_arg(text)
     if number < 1:
-        raise argparse.ArgumentTypeError(f"must be at least 1: {text!r}")
+        raise typer.BadParameter(f"must be at least 1: {text!r}")
     return number
 
 
 def limit_arg(text: str) -> int:
     """Convert text to a hit count, by the rules of Config.limit."""
+    from sift.config import Config
+
     try:
-        number = int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"invalid int value: {text!r}"
-        ) from None
-    try:
-        return Config.limit.validate(number)
+        return Config.limit.validate(int_arg(text))
     except ConfigError as error:
-        raise argparse.ArgumentTypeError(str(error)) from None
-
-
-def doc_id_arg(text: str) -> int:
-    """Convert text to a document id (an int, zero or more)."""
-    try:
-        number = int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"invalid document id: {text!r}"
-        ) from None
-    if number < 0:
-        raise argparse.ArgumentTypeError(f"negative document id: {text!r}")
-    return number
-
-
-def port_arg(text: str) -> int:
-    """Convert text to a TCP port, 0 to 65535, for argparse."""
-    try:
-        number = int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"invalid int value: {text!r}"
-        ) from None
-    if not 0 <= number <= 65535:
-        raise argparse.ArgumentTypeError(f"port out of range: {text!r}")
-    return number
+        raise typer.BadParameter(str(error)) from None
 
 
 def jobs_list_arg(text: str) -> list[int]:
-    """Convert "1,2,4" to [1, 2, 4], without repeats, for argparse."""
-    return list(dict.fromkeys(positive_int(part) for part in text.split(",")))
+    """Convert "1,2,4" to [1, 2, 4], without repeats."""
+    try:
+        numbers = (positive_int(part) for part in text.split(","))
+        return list(dict.fromkeys(numbers))
+    except typer.BadParameter as error:
+        raise typer.BadParameter(
+            error.message, param_hint="'--jobs'"
+        ) from None
+
+
+def mode_arg(text: str) -> Mode:
+    """Convert text to one mode, for ``--mode``."""
+    from sift.parallel import MODES
+
+    for mode in MODES:
+        if text == mode:
+            return mode
+    raise typer.BadParameter(
+        f"unknown mode {text!r}, use one of {', '.join(MODES)}",
+        param_hint="'--mode'",
+    )
 
 
 def modes_arg(text: str) -> list[Mode]:
-    """Convert "process,thread" to a list of modes, for argparse."""
-    modes: list[Mode] = []
-    for part in text.split(","):
-        for mode in MODES:
-            if part == mode:
-                modes.append(mode)
-                break
-        else:
-            raise argparse.ArgumentTypeError(
-                f"unknown mode {part!r}, use one of {', '.join(MODES)}"
-            )
-    return list(dict.fromkeys(modes))
+    """Convert "process,thread" to a list of modes, without repeats."""
+    return list(dict.fromkeys(mode_arg(part) for part in text.split(",")))
+
+
+def port_arg(text: str) -> int:
+    """Convert text to a TCP port, 0 to 65535."""
+    number = int_arg(text)
+    if not 0 <= number <= 65535:
+        raise typer.BadParameter(f"port out of range: {text!r}")
+    return number
 
 
 def print_stats(index: SegmentIndex) -> None:
@@ -225,34 +315,69 @@ def print_recent_queries(directory: Path, limit: int = 10) -> None:
         )
 
 
-def run_index(args: argparse.Namespace) -> None:
+@app.command("index", help="Build or update the index and print its stats.")
+def run_index(
+    corpus: Annotated[
+        Path | None,
+        typer.Option(
+            help="Directory of Markdown posts "
+            "(default: the corpus setting of sift.toml).",
+        ),
+    ] = None,
+    full: Annotated[
+        bool,
+        typer.Option(
+            "--full", help="Rebuild from scratch instead of updating."
+        ),
+    ] = False,
+    jobs: Annotated[
+        int,
+        typer.Option(
+            parser=positive_int,
+            metavar="N",
+            help="Workers that parse and analyze files.",
+        ),
+    ] = 1,
+    mode: Annotated[
+        str,
+        typer.Option(
+            metavar="MODE",
+            help=f"Kind of worker when --jobs > 1: {MODE_NAMES}.",
+        ),
+    ] = "process",
+) -> None:
     """Build or update the index directory and print what changed."""
+    from sift.config import load_config
     from sift.storage.store import update_index
 
+    worker = mode_arg(mode)
     config = load_config()
-    corpus = args.corpus or config.corpus
     start = time.perf_counter()
-    report = update_index(
-        corpus,
-        index_dir(config),
-        config.pipeline,
-        full=args.full,
-        jobs=args.jobs,
-        mode=args.mode,
-    )
+    with render.index_progress() as progress:
+        report = update_index(
+            corpus or config.corpus,
+            index_dir(config),
+            config.pipeline,
+            full=full,
+            jobs=jobs,
+            mode=worker,
+            progress=progress,
+        )
     took = (time.perf_counter() - start) * 1000
-    mode = "full rebuild" if report.full else "incremental"
+    kind = "full rebuild" if report.full else "incremental"
     print(f"documents: {report.documents}")
     print(f"vocabulary: {report.terms}")
     print(
-        f"{mode}: parsed {report.parsed}, unchanged {report.unchanged}, "
+        f"{kind}: parsed {report.parsed}, unchanged {report.unchanged}, "
         f"removed {report.removed}; segment {report.size} bytes; "
         f"took {took:.1f} ms"
     )
 
 
-def run_stats(args: argparse.Namespace) -> None:
+@app.command("stats", help="Print index statistics.")
+def run_stats() -> None:
     """Print the stats of the index."""
+    from sift.config import load_config
     from sift.storage.store import open_index
 
     directory = index_dir(load_config())
@@ -272,16 +397,48 @@ def read_query(words: list[str]) -> str:
     return " ".join(words)
 
 
-def run_search(args: argparse.Namespace) -> None:
+@app.command("search", help="Search the index.")
+def run_search(
+    query: Annotated[
+        list[str],
+        typer.Argument(
+            show_default=False,
+            help="Query words; a lone - reads stdin.",
+        ),
+    ],
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            parser=limit_arg,
+            metavar="N",
+            help="Most hits to print "
+            "(default: the search limit of sift.toml).",
+        ),
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print JSON.")
+    ] = False,
+    no_log: Annotated[
+        bool,
+        typer.Option("--no-log", help="Do not log the query in sift.db."),
+    ] = False,
+) -> None:
     """Print the best documents for the query."""
+    import json
+
+    from sift.analysis import build_pipeline
+    from sift.config import load_config
+    from sift.query import parse
+    from sift.search import Searcher
+    from sift.snippet import render_plain
     from sift.storage.db import log_query
     from sift.storage.store import DB, open_index
 
     config = load_config()
     directory = index_dir(config)
     require_index(directory)
-    query = read_query(args.query)
-    parse(query)  # fail fast: a typo must not cost an index open
+    text = read_query(query)
+    parse(text)  # fail fast: a typo must not cost an index open
     start = time.perf_counter()
     with open_index(directory) as index:
         searcher = Searcher(
@@ -291,11 +448,11 @@ def run_search(args: argparse.Namespace) -> None:
             pipeline=build_pipeline(index.pipeline_names),
         )
         opened = time.perf_counter()
-        result = searcher.search(query, args.limit or config.limit)
+        result = searcher.search(text, limit or config.limit)
         n_docs = index.n_docs
-    if not args.no_log:
+    if not no_log:
         try:
-            log_query(directory / DB, query, result.total, result.took_ms)
+            log_query(directory / DB, text, result.total, result.took_ms)
         except SiftError:
             # the error text can hold the query: say only where
             print(
@@ -303,7 +460,7 @@ def run_search(args: argparse.Namespace) -> None:
                 f"{directory / DB}",
                 file=sys.stderr,
             )
-    if args.json:
+    if as_json:
         payload = {
             "query": result.query,
             "total": result.total,
@@ -321,19 +478,17 @@ def run_search(args: argparse.Namespace) -> None:
         }
         print(json.dumps(payload, ensure_ascii=False))
         return
-    for rank, hit in enumerate(result.hits, 1):
-        print(f"{rank:>2}  {hit.score:7.3f}  {hit.path}")
-        print(f"    {hit.title}")
-        print(f"    {render_plain(hit.snippet)}")
-    print(
-        f"{result.total} hits in {n_docs} files: "
-        f"index opened in {(opened - start) * 1000:.1f} ms, "
-        f"query took {result.took_ms:.3f} ms"
+    render.print_hits(
+        result,
+        n_docs,
+        (opened - start) * 1000,
+        render.stdout_console(),
     )
 
 
 def find_document(doc_id: int) -> Document:
     """Return the document with doc_id; raise SiftError if none."""
+    from sift.config import load_config
     from sift.storage.db import load_document
     from sift.storage.store import DB
 
@@ -345,9 +500,15 @@ def find_document(doc_id: int) -> Document:
     return doc
 
 
-def run_show(args: argparse.Namespace) -> None:
+DocId = Annotated[
+    int, typer.Argument(min=0, metavar="DOC_ID", help="Document id.")
+]
+
+
+@app.command("show", help="Print one document.")
+def run_show(doc_id: DocId) -> None:
     """Print the metadata and the text of one document."""
-    doc = find_document(args.doc_id)
+    doc = find_document(doc_id)
     print(f"title: {doc.title}")
     print(f"path: {doc.path}")
     print(f"published: {doc.published.isoformat()}")
@@ -358,9 +519,13 @@ def run_show(args: argparse.Namespace) -> None:
     print(doc.body)
 
 
-def run_open(args: argparse.Namespace) -> None:
+@app.command("open", help="Open a document in $EDITOR.")
+def run_open(doc_id: DocId) -> None:
     """Open one document in $EDITOR (default vi)."""
-    doc = find_document(args.doc_id)
+    import shlex
+    import subprocess
+
+    doc = find_document(doc_id)
     editor = os.environ.get("EDITOR", "vi")
     try:
         done = subprocess.run([*shlex.split(editor), str(doc.path)])
@@ -373,6 +538,8 @@ def run_open(args: argparse.Namespace) -> None:
 @contextmanager
 def searching(directory: Path, config: Config) -> Generator[Searcher]:
     """Open the index in directory and yield a Searcher over it."""
+    from sift.analysis import build_pipeline
+    from sift.search import Searcher
     from sift.storage.store import open_index
 
     with open_index(directory) as index:
@@ -384,7 +551,45 @@ def searching(directory: Path, config: Config) -> Generator[Searcher]:
         )
 
 
-def run_serve(args: argparse.Namespace) -> None:
+@app.command("serve", help="Serve search over HTTP.")
+def run_serve(
+    ctx: typer.Context,
+    raw: Annotated[
+        bool,
+        typer.Option(
+            "--raw",
+            help="Use the hand-written asyncio server of chapter 17 "
+            "instead of FastAPI on uvicorn.",
+        ),
+    ] = False,
+    host: Annotated[
+        str,
+        typer.Option(
+            help="Address to listen on; there is no authentication, so "
+            "a non-loopback address exposes the index.",
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option(
+            parser=port_arg,
+            metavar="PORT",
+            help="Port to listen on, 0 for any free one.",
+        ),
+    ] = 8000,
+    max_pending: Annotated[
+        int,
+        typer.Option(
+            parser=positive_int,
+            metavar="N",
+            help="Searches running or waiting before the next one gets 503.",
+        ),
+    ] = 32,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", help="Do not log one line per request."),
+    ] = False,
+) -> None:
     """Serve /search, /docs/<id> and /health until SIGTERM or Ctrl-C.
 
     FastAPI on uvicorn, or with --raw the hand-written server. Raise
@@ -392,21 +597,31 @@ def run_serve(args: argparse.Namespace) -> None:
     (exit 1) if the address cannot be bound or FastAPI is not
     installed. The URL is printed on stdout once the socket listens.
     """
+    import asyncio
+
+    from sift.config import load_config
+
     config = load_config()
     directory = index_dir(config)
     require_index(directory)
-    setup_logging("WARNING" if args.quiet else "INFO")
+    if ctx.meta.get(DEBUG_KEY):
+        level = "DEBUG"
+    else:
+        level = "WARNING" if quiet else "INFO"
+    setup_logging(level, rich=render.wants_rich(sys.stderr))
     announce = print_flushed
-    if args.raw:
+    if raw:
+        from sift.server.raw import serve as serve_raw
+
         with searching(directory, config) as searcher:
             asyncio.run(
                 serve_raw(
                     searcher,
                     config,
-                    args.host,
-                    args.port,
+                    host,
+                    port,
                     announce=announce,
-                    max_pending=args.max_pending,
+                    max_pending=max_pending,
                 )
             )
         return
@@ -421,11 +636,11 @@ def run_serve(args: argparse.Namespace) -> None:
         serve(
             lambda: searching(directory, config),
             config,
-            args.host,
-            args.port,
+            host,
+            port,
             announce=announce,
-            max_pending=args.max_pending,
-            quiet=args.quiet,
+            max_pending=max_pending,
+            quiet=quiet,
         )
     )
 
@@ -448,39 +663,86 @@ def print_bench_table(
         print(f"{jobs:>4}{cells}")
 
 
-def run_bench_index(args: argparse.Namespace) -> None:
-    """Time index_items on the corpus repeated args.repeat times.
+@bench_app.command(
+    "index", help="Time parallel indexing: a table of jobs x mode."
+)
+def run_bench_index(
+    repeat: Annotated[
+        int,
+        typer.Option(
+            parser=positive_int,
+            metavar="N",
+            help="Copies of the corpus to index.",
+        ),
+    ] = 8,
+    jobs: Annotated[
+        str,
+        typer.Option(metavar="LIST", help="Comma-separated worker counts."),
+    ] = "1,2,4,8",
+    mode: Annotated[
+        str,
+        typer.Option(
+            metavar="LIST",
+            help=f"Comma-separated modes: {MODE_NAMES}.",
+        ),
+    ] = "process,thread,interp",
+    rounds: Annotated[
+        int,
+        typer.Option(
+            parser=positive_int,
+            metavar="N",
+            help="Runs per cell, the best is kept.",
+        ),
+    ] = 3,
+) -> None:
+    """Time index_items on the corpus repeated ``repeat`` times.
 
-    The corpus is read once, copied args.repeat times in memory with
+    The corpus is read once, copied ``repeat`` times in memory with
     the doc_ids renumbered, and indexed for every jobs and mode. The
-    table shows the best of args.rounds runs in seconds and the
+    table shows the best of ``rounds`` runs in seconds and the
     speedup over the serial build; jobs=1 is that build in every mode.
     """
+    import platform
+
+    from sift.config import load_config
+    from sift.parallel import (
+        bench_index,
+        gil_enabled,
+        read_items,
+        replicate,
+    )
+
+    job_counts = jobs_list_arg(jobs)
+    modes = modes_arg(mode)
     config = load_config()
     check_corpus(config.corpus)
     base = read_items(config.corpus)
-    items = replicate(base, args.repeat)
+    items = replicate(base, repeat)
     gil = "enabled" if gil_enabled() else "disabled"
     print(
-        f"corpus: {len(base)} files x {args.repeat} = {len(items)} "
+        f"corpus: {len(base)} files x {repeat} = {len(items)} "
         f"documents, pipeline {','.join(config.pipeline)}"
     )
     print(
         f"python {platform.python_version()}, GIL {gil}, "
-        f"{os.cpu_count()} CPUs, best of {args.rounds} rounds"
+        f"{os.cpu_count()} CPUs, best of {rounds} rounds"
     )
     serial, timings = bench_index(
         items,
         config.pipeline,
-        args.jobs,
-        args.mode,
-        rounds=args.rounds,
+        job_counts,
+        modes,
+        rounds=rounds,
     )
-    print_bench_table(serial, timings, args.mode)
+    print_bench_table(serial, timings, modes)
 
 
-def run_bench_search(args: argparse.Namespace) -> None:
+@bench_app.command("search", help="Run bench/queries.txt.")
+def run_bench_search() -> None:
     """Run bench/queries.txt: open the index once, time each query."""
+    from sift.analysis import build_pipeline
+    from sift.config import load_config
+    from sift.search import Searcher
     from sift.storage.store import open_index
 
     config = load_config()
@@ -506,187 +768,20 @@ def run_bench_search(args: argparse.Namespace) -> None:
     print(f"{total * 1000:8.2f} ms  total for {len(timings)} queries")
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Return the parser of the whole command line."""
-    parser = argparse.ArgumentParser(
-        prog="sift",
-        description="Search the Markdown posts of a blog.",
-        epilog=(
-            "exit codes: 0 ok, 2 usage, 3 bad query, 4 no index, 1 other error"
-        ),
-    )
-    parser.add_argument(
-        "--version", action="version", version=f"sift {__version__}"
-    )
-    commands = parser.add_subparsers(
-        title="commands", dest="command", metavar="COMMAND", required=True
-    )
-
-    cmd = commands.add_parser(
-        "index", help="build or update the index and print its stats"
-    )
-    cmd.add_argument(
-        "--corpus",
-        type=Path,
-        default=None,
-        help="directory of Markdown posts (default: [index] corpus)",
-    )
-    cmd.add_argument(
-        "--full",
-        action="store_true",
-        help="rebuild from scratch instead of updating",
-    )
-    cmd.add_argument(
-        "--jobs",
-        type=positive_int,
-        default=1,
-        help="workers that parse and analyze files (default: 1)",
-    )
-    cmd.add_argument(
-        "--mode",
-        choices=MODES,
-        default="process",
-        help="kind of worker when --jobs > 1 (default: %(default)s)",
-    )
-    cmd.set_defaults(func=run_index)
-
-    cmd = commands.add_parser("search", help="search the index")
-    cmd.add_argument(
-        "query", nargs="+", help="query words; a lone - reads stdin"
-    )
-    cmd.add_argument(
-        "--limit",
-        type=limit_arg,
-        default=None,
-        help="most hits to print (default: [search] limit of sift.toml)",
-    )
-    cmd.add_argument("--json", action="store_true", help="print JSON")
-    cmd.add_argument(
-        "--no-log",
-        action="store_true",
-        help="do not log the query in sift.db",
-    )
-    cmd.set_defaults(func=run_search)
-
-    cmd = commands.add_parser("show", help="print one document")
-    cmd.add_argument("doc_id", type=doc_id_arg, metavar="DOC_ID")
-    cmd.set_defaults(func=run_show)
-
-    cmd = commands.add_parser("stats", help="print index statistics")
-    cmd.set_defaults(func=run_stats)
-
-    cmd = commands.add_parser("open", help="open a document in $EDITOR")
-    cmd.add_argument("doc_id", type=doc_id_arg, metavar="DOC_ID")
-    cmd.set_defaults(func=run_open)
-
-    cmd = commands.add_parser("serve", help="serve search over HTTP")
-    cmd.add_argument(
-        "--raw",
-        action="store_true",
-        help=(
-            "use the hand-written asyncio server of chapter 17 instead "
-            "of FastAPI on uvicorn"
-        ),
-    )
-    cmd.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help=(
-            "address to listen on; there is no authentication, so a "
-            "non-loopback address exposes the index (default: "
-            "%(default)s)"
-        ),
-    )
-    cmd.add_argument(
-        "--port",
-        type=port_arg,
-        default=8000,
-        help="port to listen on, 0 for any free one (default: %(default)s)",
-    )
-    cmd.add_argument(
-        "--max-pending",
-        type=positive_int,
-        default=MAX_PENDING,
-        help=(
-            "searches running or waiting before the next one gets 503 "
-            "(default: %(default)s)"
-        ),
-    )
-    cmd.add_argument(
-        "--quiet",
-        action="store_true",
-        help="do not log one line per request",
-    )
-    cmd.set_defaults(func=run_serve)
-
-    cmd = commands.add_parser("bench", help="time indexing or searching")
-    kinds = cmd.add_subparsers(
-        title="benchmarks", dest="kind", metavar="KIND", required=True
-    )
-    sub = kinds.add_parser(
-        "index", help="time parallel indexing: a table of jobs x mode"
-    )
-    sub.add_argument(
-        "--repeat",
-        type=positive_int,
-        default=8,
-        help="copies of the corpus to index (default: %(default)s)",
-    )
-    sub.add_argument(
-        "--jobs",
-        type=jobs_list_arg,
-        default="1,2,4,8",
-        help="comma-separated worker counts (default: %(default)s)",
-    )
-    sub.add_argument(
-        "--mode",
-        type=modes_arg,
-        default="process,thread,interp",
-        help="comma-separated modes (default: %(default)s)",
-    )
-    sub.add_argument(
-        "--rounds",
-        type=positive_int,
-        default=3,
-        help="runs per cell, the best is kept (default: %(default)s)",
-    )
-    sub.set_defaults(func=run_bench_index)
-    sub = kinds.add_parser("search", help="run bench/queries.txt")
-    sub.set_defaults(func=run_bench_search)
-    return parser
-
-
 def main(argv: Sequence[str] | None = None) -> None:
-    """Run the command line and turn Sift errors into exit codes.
+    """Run the command line; exit with the code of a failure.
 
-    argv defaults to sys.argv[1:]. A usage error exits 2 (argparse).
+    argv defaults to sys.argv[1:]. A usage error exits 2 (click).
     A QuerySyntaxError prints the query and a caret line and exits 3.
     IndexMissingError prints ``sift: ...`` and exits 4. Any other
     SiftError, alone or inside an ExceptionGroup, prints
     ``error: ...`` and exits 1. Ctrl-C prints ``interrupted`` and exits
-    130 (128 + SIGINT). Success returns None.
+    130 (128 + SIGINT). Success, ``--help`` and ``--version`` return
+    None; typer would exit 0 for them, which is turned back here so
+    that a program can call ``main`` as a function.
     """
-    setup_logging()
-    args = build_parser().parse_args(argv)
     try:
-        args.func(args)
-    except QuerySyntaxError as error:
-        print(error.render(), file=sys.stderr)
-        sys.exit(3)
-    except IndexMissingError as error:
-        print(f"sift: {error}", file=sys.stderr)
-        sys.exit(4)
-    except SiftError as error:
-        print(f"error: {error}", file=sys.stderr)
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        sys.exit(130)
-    except ExceptionGroup as group:
-        _, other = group.split(SiftError)
-        if other is not None:
+        app(args=None if argv is None else list(argv), prog_name="sift")
+    except SystemExit as stop:
+        if stop.code:
             raise
-        print(f"error: {group.message}", file=sys.stderr)
-        for failure in group.exceptions:
-            print(f"  {failure}", file=sys.stderr)
-        sys.exit(1)

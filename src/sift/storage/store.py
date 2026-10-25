@@ -14,7 +14,7 @@ segment when asked.
 """
 
 import logging
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -307,6 +307,7 @@ def update_index(
     compress: bool = False,
     jobs: int = 1,
     mode: Mode = "process",
+    progress: Callable[[int, int], None] | None = None,
 ) -> UpdateReport:
     """Build or update the index of corpus in index_dir.
 
@@ -318,7 +319,9 @@ def update_index(
     differs from the old one. Malformed front matter raises an
     ExceptionGroup before anything is written. The changed files are
     parsed and analyzed by jobs workers of mode (see sift.parallel);
-    the index written is the same for every jobs and mode.
+    the index written is the same for every jobs and mode. progress is
+    passed to index_items: it is called as ``progress(done, total)``
+    while the changed files are parsed, and never when none changed.
     """
     check_jobs(jobs, mode)
     if not corpus.is_dir():
@@ -340,6 +343,7 @@ def update_index(
         pipeline_names,
         jobs=jobs,
         mode=mode,
+        progress=progress,
     )
     stale = plan.stale_ids
     documents = {

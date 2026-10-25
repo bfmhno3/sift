@@ -15,6 +15,7 @@ from sift.errors import FrontMatterError, SiftError
 from sift.index import IndexWriter, InvertedIndex
 from sift.parallel import (
     MODES,
+    PROGRESS_CHUNKS,
     Item,
     Mode,
     bench_index,
@@ -115,6 +116,46 @@ def test_no_items_gives_an_empty_index() -> None:
     for jobs in (1, 3):
         built = index_items([], NAMES, jobs=jobs, mode="thread")
         assert fingerprint(built) == (0, 0, 0)
+
+
+@pytest.mark.parametrize("jobs", [1, 3])
+def test_progress_counts_items_up_to_the_total(
+    mini_root: Path, jobs: int
+) -> None:
+    items = read_items(mini_root)
+    calls: list[tuple[int, int]] = []
+    built = index_items(
+        items,
+        NAMES,
+        jobs=jobs,
+        mode="thread",
+        progress=lambda done, total: calls.append((done, total)),
+    )
+    assert same_index(built, index_items(items, NAMES))
+    dones = [done for done, _ in calls]
+    assert dones == sorted(set(dones))
+    assert calls[-1] == (len(items), len(items))
+    assert {total for _, total in calls} == {len(items)}
+    assert len(calls) > 1
+
+
+def test_serial_progress_moves_in_steps(mini_root: Path) -> None:
+    items = replicate(read_items(mini_root), 4)
+    calls: list[int] = []
+    index_items(items, NAMES, progress=lambda done, total: calls.append(done))
+    assert len(calls) == PROGRESS_CHUNKS
+
+
+def test_progress_is_called_even_when_a_file_fails(tmp_path: Path) -> None:
+    (tmp_path / "bad.md").write_text(BAD)
+    (tmp_path / "ok.md").write_text(GOOD.format(n=1))
+    items = read_items(tmp_path)
+    calls: list[int] = []
+    with pytest.raises(ExceptionGroup):
+        index_items(
+            items, NAMES, progress=lambda done, total: calls.append(done)
+        )
+    assert calls[-1] == 2
 
 
 @pytest.mark.parametrize("mode", MODES)

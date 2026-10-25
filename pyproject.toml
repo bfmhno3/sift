@@ -11,6 +11,9 @@ license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 dependencies = [
   "sqlalchemy>=2.0.51",
+  "typer>=0.25",
+  "click>=8.2.1",
+  "rich>=15",
 ]
 
 [project.optional-dependencies]

@@ -46,7 +46,8 @@ sift.toml            settings: corpus, index directory, analysis pipeline, BM25
 src/sift/            the package (parallel.py: process, thread and interpreter pools;
                      server/raw.py: the hand-written asyncio HTTP server;
                      server/app.py, models.py: the FastAPI server and its pydantic models;
-                     client.py: httpx clients, sync and async)
+                     client.py: httpx clients, sync and async;
+                     cli.py: the typer command line; render.py: rich tables, progress, tracebacks)
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -80,7 +81,12 @@ sift index     # writes .sift/ (segment.sft, sift.db, manifest.json)
 sift search --limit 3 rust
 sift index --full --jobs 4 --mode thread   # modes: process, thread, interp
 sift bench index --repeat 8 --jobs 1,2,4,8 --mode process,thread,interp
-PYTHONPATH=src python3.14t -m sift bench index --mode thread   # free-threaded, no venv
+PYTHONPATH=src:<pure-Python site-packages> python3.14t -m sift bench index --mode thread
+                               # free-threaded: typer and rich are not installed for it,
+                               # see lab/ch16/extra.sh
+sift --help                    # typer; rich tables and a progress bar only on a terminal
+sift --debug search rust       # DEBUG logs and rich tracebacks
+python -m build --no-isolation # wheel and sdist into dist/ (see lab/ch19/extra.sh)
 sift serve --port 8000         # FastAPI on uvicorn (needs the web extra): /search?q=...,
                                # /docs/<id>, /health as JSON, OpenAPI at /api/docs;
                                # no authentication, 127.0.0.1 by default; answers
@@ -88,6 +94,12 @@ sift serve --port 8000         # FastAPI on uvicorn (needs the web extra): /sear
 sift serve --raw --port 8000   # the same routes on the hand-written asyncio server
 python3 lab/ch17/load.py --port 8000 --clients 100 --requests 20
 ```
+
+## Dependencies
+
+`sift` needs SQLAlchemy, typer (with click) and rich. rich output (the hit table, the progress bar of `sift index`,
+`--debug` tracebacks, coloured log lines) is used only when the stream is a terminal, `NO_COLOR` is unset and `TERM` is
+not `dumb`; in a pipe, with `--json` or in a test the commands print the plain text of chapter 18.
 
 ## Optional dependencies
 

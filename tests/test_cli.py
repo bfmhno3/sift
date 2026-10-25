@@ -1,8 +1,14 @@
-"""Tests for the command line in sift.cli."""
+"""Tests for the command line in sift.cli.
+
+Most tests run the typer app with typer's CliRunner (``invoke``): the
+runner returns the exit code, stdout and stderr of one command, the
+same three things a shell sees. The tests of ``main`` and of the
+server commands run the real thing.
+"""
 
 import asyncio
-import io
 import json
+import logging
 import os
 import shutil
 import signal
@@ -10,17 +16,23 @@ import socket
 import subprocess
 import sys
 import urllib.request
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+import typer.main
+from typer.testing import CliRunner, Result
 
 import sift
 import sift.cli as cli
 from sift.document import Document
 from sift.errors import ConfigError, SiftError
 from sift.storage.db import recent_queries
+
+# A wide terminal: a rich error panel wraps at 80 columns by default,
+# and the tests look for whole phrases.
+RUNNER = CliRunner(env={"COLUMNS": "200"})
 
 
 @pytest.fixture(autouse=True)
@@ -29,82 +41,103 @@ def no_sift_index(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SIFT_INDEX", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def plain_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep typer from forcing colour codes (GITHUB_ACTIONS, FORCE_COLOR)."""
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", None)
+
+
+@pytest.fixture(autouse=True)
+def restore_sift_logger() -> Iterator[None]:
+    """Give the sift logger back as it was: commands replace its handler."""
+    logger = logging.getLogger("sift")
+    handlers, level = logger.handlers[:], logger.level
+    yield
+    logger.handlers[:] = handlers
+    logger.setLevel(level)
+
+
+def invoke(*args: str, input: str | None = None) -> Result:
+    """Run ``sift ARGS`` in process; return the runner's Result."""
+    return RUNNER.invoke(cli.app, list(args), input=input)
+
+
+def ok(*args: str, input: str | None = None) -> Result:
+    """Run ``sift ARGS`` and check that it exits 0."""
+    result = invoke(*args, input=input)
+    assert result.exit_code == 0, result.output
+    return result
+
+
+def code_of(*args: str) -> int:
+    """Run ``sift ARGS``; return the exit code."""
+    return invoke(*args).exit_code
+
+
 @pytest.fixture
 def mini_cli(
     monkeypatch: pytest.MonkeyPatch, mini_root: Path, tmp_path: Path
-) -> ModuleType:
+) -> None:
     """Work in a temp dir with a sift.toml and an index of the mini posts."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "sift.toml").write_text(
         f'[index]\ncorpus = "{mini_root}"\npath = "{tmp_path / "idx"}"\n',
         encoding="utf-8",
     )
-    cli.main(["index"])
-    return cli
+    ok("index")
 
 
-def run_main(*args: str) -> int:
-    """Run main() with the args; return the exit status."""
-    with pytest.raises(SystemExit) as caught:
-        cli.main(args)
-    assert isinstance(caught.value.code, int)
-    return caught.value.code
-
-
-def test_search_prints_ranked_hits(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(["search", "chain", "tool"])
-    out = capsys.readouterr().out
+def test_search_prints_ranked_hits(mini_cli) -> None:
+    out = ok("search", "chain", "tool").stdout
     assert "bicycle-repair.md" in out
     assert "Fixing a bicycle chain" in out
     assert "[chain]" in out.lower()
     assert "1 hits in 8 files: index opened in" in out
 
 
-def test_search_words_are_joined_into_one_query(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(["search", '"chain', 'tool"'])
-    assert "1 hits" in capsys.readouterr().out
+def test_search_words_are_joined_into_one_query(mini_cli) -> None:
+    assert "1 hits" in ok("search", '"chain', 'tool"').stdout
 
 
-def test_search_limit(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
-    mini_cli.main(["search", "--limit", "1", "tea", "OR", "bicycle"])
-    out = capsys.readouterr().out
+def test_search_limit(mini_cli) -> None:
+    out = ok("search", "--limit", "1", "tea", "OR", "bicycle").stdout
     assert out.count(".md") == 1
 
 
-def test_search_limit_accepts_the_maximum(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(["search", "--limit", "100", "tea", "OR", "bicycle"])
-    assert capsys.readouterr().out.count(".md") >= 1
+def test_search_limit_accepts_the_maximum(mini_cli) -> None:
+    out = ok("search", "--limit", "100", "tea", "OR", "bicycle").stdout
+    assert out.count(".md") >= 1
 
 
-def test_search_json(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
-    mini_cli.main(["search", "--json", "chain", "tool"])
-    data = json.loads(capsys.readouterr().out)
+def test_search_json(mini_cli) -> None:
+    data = json.loads(ok("search", "--json", "chain", "tool").stdout)
     assert data["total"] == 1
     assert data["hits"][0]["path"].endswith("bicycle-repair.md")
     assert data["hits"][0]["title"] == "Fixing a bicycle chain"
 
 
-def test_search_no_log_does_not_log(
-    mini_cli, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    mini_cli.main(["search", "--no-log", "chain"])
-    assert "hits in 8 files" in capsys.readouterr().out
+def test_search_json_has_the_documented_keys(mini_cli) -> None:
+    data = json.loads(ok("search", "--json", "chain").stdout)
+    assert list(data) == ["query", "total", "took_ms", "hits"]
+    assert list(data["hits"][0]) == [
+        "doc_id",
+        "title",
+        "path",
+        "score",
+        "snippet",
+    ]
+    assert "[chain]" in data["hits"][0]["snippet"].lower()
+
+
+def test_search_no_log_does_not_log(mini_cli, tmp_path: Path) -> None:
+    out = ok("search", "--no-log", "chain").stdout
+    assert "hits in 8 files" in out
     assert recent_queries(tmp_path / "idx" / "sift.db") == []
 
 
-def test_search_logs_the_query(
-    mini_cli, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    mini_cli.main(["search", "chain", "tool"])
-    capsys.readouterr()
-    mini_cli.main(["search", "--json", "zzzzqqqq"])
-    capsys.readouterr()
+def test_search_logs_the_query(mini_cli, tmp_path: Path) -> None:
+    ok("search", "chain", "tool")
+    ok("search", "--json", "zzzzqqqq")
     rows = recent_queries(tmp_path / "idx" / "sift.db")
     assert [(r.query, r.total) for r in rows] == [
         ("zzzzqqqq", 0),
@@ -115,25 +148,18 @@ def test_search_logs_the_query(
 
 
 def test_syntax_error_is_not_logged(mini_cli, tmp_path: Path) -> None:
-    assert run_main("search", '"unclosed') == 3
+    assert code_of("search", '"unclosed') == 3
     assert recent_queries(tmp_path / "idx" / "sift.db") == []
 
 
-def test_stats_without_queries(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(["stats"])
-    assert "no queries logged" in capsys.readouterr().out
+def test_stats_without_queries(mini_cli) -> None:
+    assert "no queries logged" in ok("stats").stdout
 
 
-def test_stats_lists_the_last_ten_queries_newest_first(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_stats_lists_the_last_ten_queries_newest_first(mini_cli) -> None:
     for number in range(12):
-        mini_cli.main(["search", f"word{number}"])
-    capsys.readouterr()
-    mini_cli.main(["stats"])
-    out = capsys.readouterr().out
+        ok("search", f"word{number}")
+    out = ok("stats").stdout
     assert "last 10 queries:" in out
     listed = [line for line in out.splitlines() if " UTC " in line]
     assert [line.split()[-1] for line in listed] == [
@@ -142,71 +168,51 @@ def test_stats_lists_the_last_ten_queries_newest_first(
     assert "     0 hits" in listed[0]
 
 
-def test_search_dash_reads_stdin(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr("sys.stdin", io.StringIO("chain\n"))
-    mini_cli.main(["search", "-"])
-    assert "bicycle-repair.md" in capsys.readouterr().out
+def test_search_dash_reads_stdin(mini_cli) -> None:
+    out = ok("search", "-", input="chain\n").stdout
+    assert "bicycle-repair.md" in out
 
 
-def test_zero_hits_is_not_an_error(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(["search", "zzzzqqqq"])
-    assert "0 hits" in capsys.readouterr().out
+def test_zero_hits_is_not_an_error(mini_cli) -> None:
+    assert "0 hits" in ok("search", "zzzzqqqq").stdout
 
 
-def test_stats(mini_cli, capsys: pytest.CaptureFixture[str]) -> None:
-    mini_cli.main(["stats"])
-    out = capsys.readouterr().out
+def test_stats(mini_cli) -> None:
+    out = ok("stats").stdout
     assert "documents: 8" in out
     assert "vocabulary: " in out
 
 
 def test_index_full_then_incremental(
-    mini_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    mini_root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     args = ["index", "--corpus", str(mini_root)]
-    cli.main(args)
-    out = capsys.readouterr().out
+    out = ok(*args).stdout
     assert "documents: 8" in out
     assert "full rebuild: parsed 8, unchanged 0, removed 0" in out
     assert (tmp_path / ".sift" / "segment.sft").is_file()
     assert (tmp_path / ".sift" / "sift.db").is_file()
     assert (tmp_path / ".sift" / "manifest.json").is_file()
-    cli.main(args)
-    out = capsys.readouterr().out
+    out = ok(*args).stdout
     assert "incremental: parsed 0, unchanged 8, removed 0" in out
-    cli.main([*args, "--full"])
-    assert "full rebuild: parsed 8" in capsys.readouterr().out
+    assert "full rebuild: parsed 8" in ok(*args, "--full").stdout
 
 
 def test_sift_index_env_selects_the_directory(
-    mini_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    mini_root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "elsewhere"
     monkeypatch.setenv("SIFT_INDEX", str(target))
-    cli.main(["index", "--corpus", str(mini_root)])
+    ok("index", "--corpus", str(mini_root))
     assert (target / "segment.sft").is_file()
     assert not (tmp_path / ".sift").exists()
-    cli.main(["search", "chain"])
+    ok("search", "chain")
 
 
 def test_search_reads_the_segment_not_the_corpus(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    mini_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
         Document,
@@ -215,121 +221,92 @@ def test_search_reads_the_segment_not_the_corpus(
     )
     (tmp_path / "sift.toml").unlink()
     monkeypatch.setenv("SIFT_INDEX", str(tmp_path / "idx"))
-    mini_cli.main(["search", "chain"])
-    assert "bicycle-repair.md" in capsys.readouterr().out
+    assert "bicycle-repair.md" in ok("search", "chain").stdout
 
 
-def test_search_uses_the_limit_of_the_config(
-    mini_cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_search_uses_the_limit_of_the_config(mini_cli, tmp_path: Path) -> None:
     config = tmp_path / "sift.toml"
     config.write_text(config.read_text() + "[search]\nlimit = 1\n")
-    mini_cli.main(["search", "tea", "OR", "bicycle"])
-    assert capsys.readouterr().out.count(".md") == 1
+    assert ok("search", "tea", "OR", "bicycle").stdout.count(".md") == 1
 
 
-def test_bad_config_exits_1(
-    mini_cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_bad_config_exits_1(mini_cli, tmp_path: Path) -> None:
     (tmp_path / "sift.toml").write_text("[search]\nlimit = 0\n")
-    assert run_main("search", "chain") == 1
-    assert capsys.readouterr().err.startswith(
-        "error: sift.toml: [search] limit"
-    )
+    result = invoke("search", "chain")
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: sift.toml: [search] limit")
 
 
-def test_corrupt_segment_exits_1(
-    mini_cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_corrupt_segment_exits_1(mini_cli, tmp_path: Path) -> None:
     segment = tmp_path / "idx" / "segment.sft"
     segment.write_bytes(b"NOPE" + segment.read_bytes()[4:])
-    assert run_main("search", "chain") == 1
-    assert "bad magic" in capsys.readouterr().err
+    result = invoke("search", "chain")
+    assert result.exit_code == 1
+    assert "bad magic" in result.stderr
 
 
-def test_stats_prints_counts_and_top_terms(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(["stats"])
-    out = capsys.readouterr().out
+def test_stats_prints_counts_and_top_terms(mini_cli) -> None:
+    out = ok("stats").stdout
     assert "segment: " in out
     assert out.count("\n") == 3 + 20 + 1  # + "no queries logged"
 
 
-def test_show_prints_the_document(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(["show", "0"])
-    out = capsys.readouterr().out
+def test_show_prints_the_document(mini_cli) -> None:
+    out = ok("show", "0").stdout
     assert out.startswith("title: ")
     assert "\npath: " in out
 
 
-def test_show_unknown_id_exits_1(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert run_main("show", "99") == 1
-    assert capsys.readouterr().err == "error: no document with id 99\n"
+def test_show_unknown_id_exits_1(mini_cli) -> None:
+    result = invoke("show", "99")
+    assert result.exit_code == 1
+    assert result.stderr == "error: no document with id 99\n"
 
 
 def test_open_runs_the_editor_on_the_file(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    mini_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     log = tmp_path / "args.txt"
     script = tmp_path / "editor.sh"
     script.write_text(f'#!/bin/sh\necho "$@" > {log}\n')
     script.chmod(0o755)
     monkeypatch.setenv("EDITOR", str(script))
-    mini_cli.main(["open", "0"])
+    ok("open", "0")
     assert log.read_text().strip().endswith(".md")
 
 
 def test_open_missing_editor_exits_1(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    mini_cli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("EDITOR", "/nonexistent/editor")
-    assert run_main("open", "0") == 1
-    assert "cannot run editor" in capsys.readouterr().err
+    result = invoke("open", "0")
+    assert result.exit_code == 1
+    assert "cannot run editor" in result.stderr
 
 
 def test_bench_search_runs_every_query(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    mini_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     queries = tmp_path / "queries.txt"
     queries.write_text("chain\n\n编译\n", encoding="utf-8")
-    monkeypatch.setattr(mini_cli, "QUERIES", queries)
-    mini_cli.main(["bench", "search"])
-    out = capsys.readouterr().out
-    assert "total for 2 queries" in out
+    monkeypatch.setattr(cli, "QUERIES", queries)
+    assert "total for 2 queries" in ok("bench", "search").stdout
 
 
-def test_bench_index_prints_a_table(
-    mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mini_cli.main(
-        [
-            "bench",
-            "index",
-            "--repeat",
-            "2",
-            "--jobs",
-            "1,2",
-            "--mode",
-            "thread,process",
-            "--rounds",
-            "1",
-        ]
-    )
-    lines = capsys.readouterr().out.splitlines()
+def test_bench_index_prints_a_table(mini_cli) -> None:
+    out = ok(
+        "bench",
+        "index",
+        "--repeat",
+        "2",
+        "--jobs",
+        "1,2",
+        "--mode",
+        "thread,process",
+        "--rounds",
+        "1",
+    ).stdout
+    lines = out.splitlines()
     assert lines[0].startswith("corpus: 8 files x 2 = 16 documents")
     assert "GIL" in lines[1]
     assert lines[2].split() == ["jobs", "thread", "process"]
@@ -344,7 +321,7 @@ def test_index_jobs_gives_the_same_segment(
     mini_cli, tmp_path: Path, mode: str
 ) -> None:
     serial = (tmp_path / "idx" / "segment.sft").read_bytes()
-    mini_cli.main(["index", "--full", "--jobs", "3", "--mode", mode])
+    ok("index", "--full", "--jobs", "3", "--mode", mode)
     assert (tmp_path / "idx" / "segment.sft").read_bytes() == serial
 
 
@@ -362,43 +339,54 @@ def test_index_jobs_gives_the_same_segment(
     ],
 )
 def test_bad_parallel_options_exit_2(args: list[str]) -> None:
-    assert run_main(*args) == 2
+    assert code_of(*args) == 2
+
+
+def test_bad_mode_names_the_option_and_the_choices() -> None:
+    result = invoke("index", "--mode", "fork")
+    assert "Invalid value for '--mode'" in result.stderr
+    assert "use one of process, thread, interp" in result.stderr
 
 
 def test_index_with_bad_front_matter_exits_1_in_every_mode(
-    mini_cli,
-    tmp_path: Path,
-    mini_root: Path,
-    capsys: pytest.CaptureFixture[str],
+    mini_cli, tmp_path: Path, mini_root: Path
 ) -> None:
     corpus = tmp_path / "posts"
     shutil.copytree(mini_root, corpus)
     for name in ("x1.md", "x2.md"):
         (corpus / name).write_text("---\ntitle: [oops\n---\n")
     for mode in ("process", "thread", "interp"):
-        code = run_main(
+        result = invoke(
             "index", "--corpus", str(corpus), "--jobs", "3", "--mode", mode
         )
-        assert code == 1
-        err = capsys.readouterr().err
-        assert err.startswith("error: 2 files failed")
-        assert "x1.md" in err and "x2.md" in err
+        assert result.exit_code == 1
+        assert result.stderr.startswith("error: 2 files failed")
+        assert "x1.md" in result.stderr and "x2.md" in result.stderr
 
 
-def test_bench_index_without_corpus_exits_1(
-    mini_cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bench_index_without_corpus_exits_1(mini_cli, tmp_path: Path) -> None:
     (tmp_path / "sift.toml").write_text(
         f'[index]\ncorpus = "{tmp_path / "none"}"\n', encoding="utf-8"
     )
-    assert run_main("bench", "index", "--rounds", "1") == 1
+    assert code_of("bench", "index", "--rounds", "1") == 1
 
 
 def test_version_and_bench_do_not_import_sqlalchemy() -> None:
     code = (
+        "import sys, sift.cli, typer.main;"
+        "typer.main.get_command(sift.cli.app);"
+        "assert 'sqlalchemy' not in sys.modules, 'imported'"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True)
+    assert done.returncode == 0, done.stderr
+
+
+def test_help_and_bench_start_without_sqlalchemy_and_asyncio() -> None:
+    code = (
         "import sys, sift.cli;"
-        "assert 'sqlalchemy' not in sys.modules, 'imported';"
-        "sift.cli.build_parser()"
+        "sift.cli.main(['bench', 'index', '--help']);"
+        "heavy = {'sqlalchemy', 'asyncio'} & set(sys.modules);"
+        "assert not heavy, heavy"
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True)
     assert done.returncode == 0, done.stderr
@@ -412,6 +400,7 @@ def test_version_and_bench_do_not_import_sqlalchemy() -> None:
         ["nope"],
         ["bench"],
         ["show", "x"],
+        ["show", "-1"],
         ["search", "--limit", "0", "a"],
         ["search", "--limit", "101", "a"],
         ["search", "--limit", "x", "a"],
@@ -421,106 +410,175 @@ def test_version_and_bench_do_not_import_sqlalchemy() -> None:
         ["serve", "--max-pending", "0"],
         ["serve", "--raw", "--port", "x"],
         ["serve", "--raw", "--max-pending", "0"],
+        ["stats", "extra"],
+        ["--nope"],
     ],
 )
 def test_bad_usage_exits_2(args: list[str]) -> None:
-    with pytest.raises(SystemExit) as caught:
-        cli.main(args)
-    assert caught.value.code == 2
+    assert code_of(*args) == 2
 
 
-def test_version(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as caught:
-        cli.main(["--version"])
-    assert caught.value.code == 0
-    assert capsys.readouterr().out == f"sift {sift.__version__}\n"
+def test_version() -> None:
+    result = invoke("--version")
+    assert result.exit_code == 0
+    assert result.stdout == f"sift {sift.__version__}\n"
 
 
-def test_query_syntax_error_exits_3_with_a_caret(
-    mini_cli,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert run_main("search", "a AND") == 3
-    err = capsys.readouterr().err
-    assert err == "expected a term\n  a AND\n       ^\n"
+COMMANDS = [
+    [],
+    ["index"],
+    ["search"],
+    ["show"],
+    ["stats"],
+    ["open"],
+    ["serve"],
+    ["bench"],
+    ["bench", "index"],
+    ["bench", "search"],
+]
+
+
+@pytest.mark.parametrize("path", COMMANDS, ids=" ".join)
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_exits_0_for_every_command(path: list[str], flag: str) -> None:
+    result = invoke(*path, flag)
+    assert result.exit_code == 0
+    assert result.stdout.lstrip().startswith("Usage: sift")
+    assert result.stderr == ""
+
+
+def test_help_lists_the_commands_and_the_exit_codes() -> None:
+    out = invoke("--help").stdout
+    for name in ("index", "search", "show", "stats", "open", "serve"):
+        assert name in out
+    assert "bench" in out
+    assert "--version" in out and "--debug" in out
+    assert "Exit codes: 0 ok, 2 usage, 3 bad query, 4 no index" in out
+
+
+def test_help_has_no_escape_codes_and_keeps_square_brackets() -> None:
+    out = invoke("search", "--help").stdout
+    assert "\x1b" not in out
+    assert "--limit" in out and "--json" in out and "--no-log" in out
+
+
+def test_serve_help_shows_the_same_default_as_the_raw_server() -> None:
+    from sift.server.raw import MAX_PENDING
+
+    command = typer.main.get_command(cli.app)
+    assert hasattr(command, "commands")
+    serve = command.commands["serve"]
+    defaults = {p.name: p.default for p in serve.params}
+    assert defaults["max_pending"] == MAX_PENDING
+    assert defaults["port"] == 8000
+    assert defaults["host"] == "127.0.0.1"
+
+
+def test_no_command_prints_the_help_and_exits_2() -> None:
+    result = invoke()
+    assert result.exit_code == 2
+    assert "Commands" in result.output
+
+
+def test_usage_error_goes_to_stderr_and_names_the_option() -> None:
+    result = invoke("serve", "--port", "65536")
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "Invalid value for '--port'" in result.stderr
+    assert "port out of range" in result.stderr
+
+
+def test_query_syntax_error_exits_3_with_a_caret(mini_cli) -> None:
+    result = invoke("search", "a AND")
+    assert result.exit_code == 3
+    assert result.stderr == "expected a term\n  a AND\n       ^\n"
+    assert result.stdout == ""
 
 
 @pytest.mark.parametrize("command", ["stats", "show 0", "open 0"])
 def test_missing_index_dir_exits_4(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    tmp_path: Path,
-    command: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
 ) -> None:
     missing = tmp_path / "nope"
     monkeypatch.setenv("SIFT_INDEX", str(missing))
-    assert run_main(*command.split()) == 4
-    err = capsys.readouterr().err
-    assert err == f"sift: no index at {missing}, run 'sift index' first\n"
+    result = invoke(*command.split())
+    assert result.exit_code == 4
+    assert (
+        result.stderr
+        == f"sift: no index at {missing}, run 'sift index' first\n"
+    )
 
 
 def test_search_with_missing_index_dir_exits_4(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("SIFT_INDEX", str(tmp_path / "nope"))
-    assert run_main("search", "rust") == 4
+    assert code_of("search", "rust") == 4
 
 
 def test_index_dir_without_a_segment_exits_4(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("SIFT_INDEX", str(tmp_path))
-    assert run_main("search", "chain") == 4
+    assert code_of("search", "chain") == 4
 
 
 def test_default_index_dir_is_dot_sift(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    assert run_main("search", "chain") == 4
-    err = capsys.readouterr().err
-    assert err == "sift: no index at .sift, run 'sift index' first\n"
+    result = invoke("search", "chain")
+    assert result.exit_code == 4
+    assert result.stderr == "sift: no index at .sift, run 'sift index' first\n"
 
 
-def test_sift_error_exits_1(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    def boom(args: object) -> None:
-        raise ConfigError("bad setting")
+def raising(error: BaseException):
+    """Return a load_config that raises error."""
 
-    monkeypatch.setattr(cli, "run_stats", boom)
-    assert run_main("stats") == 1
-    assert capsys.readouterr().err == "error: bad setting\n"
+    def boom() -> None:
+        raise error
+
+    return boom
+
+
+def test_sift_error_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sift.config.load_config", raising(ConfigError("bad setting"))
+    )
+    result = invoke("stats")
+    assert result.exit_code == 1
+    assert result.stderr == "error: bad setting\n"
 
 
 def test_group_of_sift_errors_exits_1(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def boom(args: object) -> None:
-        raise ExceptionGroup(
-            "2 files failed", [ConfigError("a"), ConfigError("b")]
-        )
-
-    monkeypatch.setattr(cli, "run_stats", boom)
-    assert run_main("stats") == 1
-    assert capsys.readouterr().err == "error: 2 files failed\n  a\n  b\n"
+    group = ExceptionGroup(
+        "2 files failed", [ConfigError("a"), ConfigError("b")]
+    )
+    monkeypatch.setattr("sift.config.load_config", raising(group))
+    result = invoke("stats")
+    assert result.exit_code == 1
+    assert result.stderr == "error: 2 files failed\n  a\n  b\n"
 
 
 def test_group_with_a_bug_is_not_swallowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def boom(args: object) -> None:
-        raise ExceptionGroup("mixed", [ConfigError("a"), KeyError("b")])
+    group = ExceptionGroup("mixed", [ConfigError("a"), KeyError("b")])
+    monkeypatch.setattr("sift.config.load_config", raising(group))
+    result = invoke("stats")
+    assert result.exit_code == 1
+    assert isinstance(result.exception, ExceptionGroup)
+    assert result.exception.message == "mixed"
 
-    monkeypatch.setattr(cli, "run_stats", boom)
-    with pytest.raises(ExceptionGroup, match="mixed"):
-        cli.main(["stats"])
+
+def test_bug_is_not_turned_into_an_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sift.config.load_config", raising(KeyError("b")))
+    result = invoke("stats")
+    assert isinstance(result.exception, KeyError)
 
 
 def test_python_dash_m_sift_is_the_same_cli() -> None:
@@ -533,94 +591,171 @@ def test_python_dash_m_sift_is_the_same_cli() -> None:
     assert done.stdout == f"sift {sift.__version__}\n"
 
 
+def test_main_returns_on_success_and_exits_on_failure(
+    mini_cli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["stats"]) is None
+    assert "documents: 8" in capsys.readouterr().out
+    assert cli.main(["--version"]) is None
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["search", "a AND"])
+    assert caught.value.code == 3
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["search"])
+    assert caught.value.code == 2
+
+
 def test_keyboard_interrupt_exits_130_quietly(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def boom(args: object) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cli, "run_stats", boom)
-    assert run_main("stats") == 130
-    err = capsys.readouterr().err
-    assert err == "interrupted\n"
-    assert "Traceback" not in err
+    monkeypatch.setattr(
+        "sift.config.load_config", raising(KeyboardInterrupt())
+    )
+    result = invoke("stats")
+    assert result.exit_code == 130
+    assert result.stderr == "interrupted\n"
+    assert "Traceback" not in result.stderr
 
 
 def test_index_with_missing_corpus_exits_1(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     missing = tmp_path / "posts"
-    assert run_main("index", "--corpus", str(missing)) == 1
-    err = capsys.readouterr().err
-    assert err == f"error: no corpus at {missing}\n"
+    result = invoke("index", "--corpus", str(missing))
+    assert result.exit_code == 1
+    assert result.stderr == f"error: no corpus at {missing}\n"
     assert not (tmp_path / ".sift" / "segment.sft").exists()
 
 
 def test_bench_index_with_missing_corpus_exits_1(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    assert run_main("bench", "index") == 1
-    assert "error: no corpus at corpus/posts" in capsys.readouterr().err
+    result = invoke("bench", "index")
+    assert result.exit_code == 1
+    assert "error: no corpus at corpus/posts" in result.stderr
 
 
 def test_unwritable_log_does_not_fail_the_search(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    mini_cli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken(*args: object) -> None:
         raise SiftError("cannot log the query: secret-query-text")
 
     monkeypatch.setattr("sift.storage.db.log_query", broken)
-    mini_cli.main(["search", "chain"])
-    captured = capsys.readouterr()
-    assert "1 hits" in captured.out
-    assert captured.err.count("\n") == 1
-    assert "warning: query not logged" in captured.err
-    assert "secret" not in captured.err
+    result = ok("search", "chain")
+    assert "1 hits" in result.stdout
+    assert result.stderr.count("\n") == 1
+    assert "warning: query not logged" in result.stderr
+    assert "secret" not in result.stderr
 
 
 def test_read_only_database_does_not_fail_the_search(
-    mini_cli, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    mini_cli, tmp_path: Path
 ) -> None:
     db = tmp_path / "idx" / "sift.db"
     db.chmod(0o444)
     try:
-        mini_cli.main(["search", "chain"])
+        result = ok("search", "chain")
     finally:
         db.chmod(0o644)
-    captured = capsys.readouterr()
-    assert "1 hits" in captured.out
-    assert "query not logged" in captured.err
+    assert "1 hits" in result.stdout
+    assert "query not logged" in result.stderr
 
 
 def test_show_reads_one_document(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    mini_cli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def forbidden(*args: object) -> None:
         raise AssertionError("show must not load every document")
 
-    monkeypatch.setattr(cli, "load_documents", forbidden, raising=False)
-    mini_cli.main(["show", "0"])
-    assert "title: " in capsys.readouterr().out
+    monkeypatch.setattr("sift.storage.db.load_documents", forbidden)
+    assert "title: " in ok("show", "0").stdout
 
 
-def test_limit_above_the_maximum_is_a_usage_error(
-    capsys: pytest.CaptureFixture[str],
+def test_limit_above_the_maximum_is_a_usage_error() -> None:
+    result = invoke("search", "--limit", "101", "a")
+    assert result.exit_code == 2
+    assert "between 1 and 100" in result.stderr
+
+
+# --- rich, --debug and the plain fallback -----------------------------
+
+
+def test_plain_output_in_a_pipe_has_no_escape_codes(mini_cli) -> None:
+    result = ok("search", "chain")
+    assert "\x1b" not in result.stdout + result.stderr
+    assert result.stdout.startswith(" 1  ")
+
+
+def test_no_color_keeps_the_plain_output(
+    mini_cli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(SystemExit) as caught:
-        cli.main(["search", "--limit", "101", "a"])
-    assert caught.value.code == 2
-    assert "between 1 and 100" in capsys.readouterr().err
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    assert ok("search", "chain").stdout.startswith(" 1  ")
+
+
+def test_a_terminal_gets_the_rich_table(
+    mini_cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sift import render
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(render, "wants_rich", lambda stream: True)
+    out = ok("search", "chain").stdout
+    assert "╭" in out and "bicycle-repair.md" in out
+    assert "1 hits in 8 files: index opened in" in out
+
+
+def test_json_stays_plain_on_a_terminal(
+    mini_cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sift import render
+
+    monkeypatch.setattr(render, "wants_rich", lambda stream: True)
+    out = ok("search", "--json", "chain").stdout
+    assert "\x1b" not in out
+    assert json.loads(out)["total"] == 1
+
+
+def test_index_draws_a_progress_bar_only_on_a_terminal(
+    mini_root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from sift import render
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(render, "wants_rich", lambda stream: True)
+    result = ok("index", "--corpus", str(mini_root))
+    assert "documents: 8" in result.stdout
+    assert "full rebuild: parsed 8" in result.stdout
+
+
+def test_debug_prints_a_traceback_and_keeps_the_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sift.config.load_config", raising(ConfigError("bad setting"))
+    )
+    plain = invoke("stats")
+    assert "Traceback" not in plain.stderr
+    result = invoke("--debug", "stats")
+    assert result.exit_code == 1
+    assert "Traceback" in result.stderr
+    assert result.stderr.rstrip().endswith("error: bad setting")
+
+
+def test_debug_sets_the_log_level_and_the_traceback_hook(
+    mini_cli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    ok("--debug", "stats")
+    assert logging.getLogger("sift").level == logging.DEBUG
+    assert sys.excepthook is not sys.__excepthook__
+    ok("stats")
+    assert logging.getLogger("sift").level == logging.WARNING
 
 
 # FastAPI on uvicorn is the default; --raw is the server of chapter 17
@@ -631,43 +766,37 @@ SERVERS = pytest.mark.parametrize(
 
 @SERVERS
 def test_serve_without_an_index_exits_4(
-    flags: list[str],
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    flags: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    assert run_main("serve", *flags, "--port", "0") == 4
-    assert "run 'sift index' first" in capsys.readouterr().err
+    result = invoke("serve", *flags, "--port", "0")
+    assert result.exit_code == 4
+    assert "run 'sift index' first" in result.stderr
 
 
 @SERVERS
 def test_serve_on_a_corrupt_index_says_so_once_and_exits_1(
-    flags: list[str],
-    mini_cli,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    flags: list[str], mini_cli, tmp_path: Path
 ) -> None:
     segment = tmp_path / "idx" / "segment.sft"
     segment.write_bytes(b"NOPE" + segment.read_bytes()[4:])
-    assert run_main("serve", *flags, "--port", "0") == 1
-    err = capsys.readouterr().err
+    result = invoke("serve", *flags, "--port", "0")
+    assert result.exit_code == 1
+    err = result.stderr
     assert err.startswith("error: ")
     assert "bad magic" in err
     assert err.count("\n") == 1  # no traceback from uvicorn
 
 
 @SERVERS
-def test_serve_on_a_busy_port_exits_1(
-    flags: list[str], mini_cli, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_serve_on_a_busy_port_exits_1(flags: list[str], mini_cli) -> None:
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
         port = taken.getsockname()[1]
-        assert run_main("serve", *flags, "--port", str(port)) == 1
-    err = capsys.readouterr().err
-    assert err == (
+        result = invoke("serve", *flags, "--port", str(port))
+    assert result.exit_code == 1
+    assert result.stderr == (
         f"error: cannot listen on 127.0.0.1:{port}: address already in use\n"
     )
 
@@ -759,12 +888,11 @@ def test_serve_is_asked_with_the_clients(
 
 
 def test_serve_without_the_web_extra_says_so(
-    mini_cli,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    mini_cli, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setitem(sys.modules, "sift.server.app", None)
-    assert run_main("serve", "--port", "0") == 1
-    err = capsys.readouterr().err
+    result = invoke("serve", "--port", "0")
+    assert result.exit_code == 1
+    err = result.stderr
     assert err.startswith("error: sift serve needs the web extra")
     assert "--raw" in err
