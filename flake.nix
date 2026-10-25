@@ -48,6 +48,30 @@
               memray
             ]
           );
+          # makeFontsConf also scans the fonts of the host, and a host
+          # font (a mono CJK family, say) can then win the fallback for
+          # a character that Inter lacks. The alias puts Noto Sans CJK
+          # SC right after Inter, so Tk (chapter 20) draws Chinese with
+          # it on every machine.
+          fontsConf = pkgs.writeText "sift-fonts.conf" ''
+            <?xml version="1.0"?>
+            <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+            <fontconfig>
+              <include>${
+                pkgs.makeFontsConf {
+                  fontDirectories = [
+                    pkgs.inter
+                    pkgs.noto-fonts-cjk-sans
+                    pkgs.jetbrains-mono
+                  ];
+                }
+              }</include>
+              <alias binding="same">
+                <family>Inter</family>
+                <accept><family>Noto Sans CJK SC</family></accept>
+              </alias>
+            </fontconfig>
+          '';
         in
         pkgs.mkShell {
           packages =
@@ -75,15 +99,7 @@
               curl
             ]);
           shellHook = ''
-            export FONTCONFIG_FILE=${
-              pkgs.makeFontsConf {
-                fontDirectories = [
-                  pkgs.inter
-                  pkgs.noto-fonts-cjk-sans
-                  pkgs.jetbrains-mono
-                ];
-              }
-            }
+            export FONTCONFIG_FILE=${fontsConf}
             export SIFT_CJK_FONT="${pkgs.noto-fonts-cjk-sans}/share/fonts/opentype/noto-cjk/NotoSansCJK-VF.otf.ttc"
             unset PYTHONPATH _PYTHON_SYSCONFIGDATA_NAME _PYTHON_HOST_PLATFORM
             if [ ! -d .venv ]; then python3 -m venv --system-site-packages .venv; fi; source .venv/bin/activate; pip install -q --no-deps --no-build-isolation -e .

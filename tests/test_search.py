@@ -176,3 +176,12 @@ def test_document_cache_hits_while_a_document_is_held(
     del held
     gc.collect()
     assert 1 not in searcher.documents
+
+
+def test_highlight_terms_follow_the_positive_words(
+    searcher: Searcher,
+) -> None:
+    assert searcher.highlight_terms("chain -tea") == {"chain"}
+    assert "chain" in searcher.highlight_terms("chai*")
+    with pytest.raises(QuerySyntaxError):
+        searcher.highlight_terms("(chain")

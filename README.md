@@ -47,7 +47,9 @@ src/sift/            the package (parallel.py: process, thread and interpreter p
                      server/raw.py: the hand-written asyncio HTTP server;
                      server/app.py, models.py: the FastAPI server and its pydantic models;
                      client.py: httpx clients, sync and async;
-                     cli.py: the typer command line; render.py: rich tables, progress, tracebacks)
+                     cli.py: the typer command line; render.py: rich tables, progress, tracebacks;
+                     gui/controller.py: the search logic of a window, no toolkit;
+                     gui/tk_app.py: the tkinter window, `sift gui`)
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -93,6 +95,8 @@ sift serve --port 8000         # FastAPI on uvicorn (needs the web extra): /sear
                                # carry document paths as indexed (absolute ones leak)
 sift serve --raw --port 8000   # the same routes on the hand-written asyncio server
 python3 lab/ch17/load.py --port 8000 --clients 100 --requests 20
+sift gui --tk                  # the tkinter window (needs the gui extra and a display);
+                               # no index: exit 4, no display or no extra: exit 1
 ```
 
 ## Dependencies
@@ -107,6 +111,12 @@ usage errors are drawn with boxes only when both stdout and stderr are terminals
 `pip install 'sift[web]'` adds `fastapi`, `uvicorn`, `httpx` and `pydantic`: `sift serve` (without `--raw`),
 `sift.client` and the tests of the FastAPI server need them. The Nix dev shell provides them. The core (`sift index`,
 `sift search`, `sift serve --raw`) needs only SQLAlchemy.
+
+`pip install 'sift[gui]'` adds `sv-ttk` and `darkdetect`: the theme and the light/dark detection of `sift gui`. tkinter
+itself comes with the Python (the Nix dev shell has it). The window draws Latin text with Inter and falls back to a CJK
+font through fontconfig; the dev shell's `FONTCONFIG_FILE` names Noto Sans CJK SC as that fallback. The window tests
+(`tests/tk_display`) need a display, so `tests/test_tk_window.py` runs them under `xvfb-run`; `make ch20` saves the
+screenshots `out/figures/ch20-tk-light.png` and `ch20-tk-dark.png`.
 
 ## Corpus license
 

@@ -3,7 +3,13 @@
 import pytest
 
 from sift.analysis.tokenize import fold
-from sift.snippet import html, make_snippet, render_html, render_plain
+from sift.snippet import (
+    highlight,
+    html,
+    make_snippet,
+    render_html,
+    render_plain,
+)
 
 LONG = "word " * 100 + "needle " + "word " * 100
 
@@ -119,3 +125,21 @@ def test_sharp_s_with_accent_is_tokenized_once() -> None:
 def test_ligature_after_ascii_text_still_maps_back() -> None:
     parts = make_snippet("a \ufb01sh \u00e9", {"fish"})
     assert render_plain(parts) == "a [\ufb01sh] \u00e9"
+
+
+def test_highlight_keeps_the_whole_text_and_line_breaks() -> None:
+    text = "One fox.\nTwo foxes!\n"
+    shown, spans = highlight(text, {"fox"})
+    assert shown == text
+    assert [shown[a:b] for a, b in spans] == ["fox"]
+
+
+def test_highlight_maps_offsets_after_nfkc() -> None:
+    text = "wait… the \ufb01nal fox"
+    shown, spans = highlight(text, {"fox"})
+    assert shown == text
+    assert [shown[a:b] for a, b in spans] == ["fox"]
+
+
+def test_highlight_without_hits() -> None:
+    assert highlight("nothing here", {"zebra"}) == ("nothing here", [])

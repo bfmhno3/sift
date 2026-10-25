@@ -23,6 +23,10 @@ web = [
   "httpx>=0.28",
   "pydantic>=2.13",
 ]
+gui = [
+  "sv-ttk>=2.6",
+  "darkdetect>=0.8",
+]
 
 [project.scripts]
 sift = "sift.cli:main"
@@ -43,7 +47,14 @@ python_version = "3.14"
 files = ["src"]
 mypy_path = "src"
 
+# darkdetect ships neither stubs nor py.typed; sift.gui.tk_app wraps
+# its one call in a typed function.
+[[tool.mypy.overrides]]
+module = ["darkdetect"]
+ignore_missing_imports = true
+
 [tool.pyright]
 typeCheckingMode = "strict"
 include = ["src"]
 pythonVersion = "3.14"
+reportMissingTypeStubs = false

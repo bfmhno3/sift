@@ -432,6 +432,7 @@ COMMANDS = [
     ["stats"],
     ["open"],
     ["serve"],
+    ["gui"],
     ["bench"],
     ["bench", "index"],
     ["bench", "search"],
@@ -449,7 +450,7 @@ def test_help_exits_0_for_every_command(path: list[str], flag: str) -> None:
 
 def test_help_lists_the_commands_and_the_exit_codes() -> None:
     out = invoke("--help").stdout
-    for name in ("index", "search", "show", "stats", "open", "serve"):
+    for name in ("index", "search", "show", "stats", "open", "serve", "gui"):
         assert name in out
     assert "bench" in out
     assert "--version" in out and "--debug" in out
@@ -953,3 +954,62 @@ def test_serve_without_the_web_extra_says_so(
     err = result.stderr
     assert err.startswith("error: sift serve needs the web extra")
     assert "--raw" in err
+
+
+# sift gui: the window itself is tested in tests/tk_display
+
+
+def test_gui_without_an_index_exits_4(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for flags in ([], ["--tk"]):
+        result = invoke("gui", *flags)
+        assert result.exit_code == 4
+        assert "run 'sift index' first" in result.stderr
+
+
+def test_gui_without_a_display_exits_1(
+    monkeypatch: pytest.MonkeyPatch, mini_cli
+) -> None:
+    pytest.importorskip("tkinter")
+    pytest.importorskip("sv_ttk")
+    pytest.importorskip("darkdetect")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    result = invoke("gui", "--tk")
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: cannot open a display")
+
+
+@pytest.mark.parametrize("missing", ["sv_ttk", "darkdetect"])
+def test_gui_without_the_extra_exits_1(
+    missing: str, monkeypatch: pytest.MonkeyPatch, mini_cli
+) -> None:
+    monkeypatch.delitem(sys.modules, "sift.gui.tk_app", raising=False)
+    monkeypatch.setitem(sys.modules, missing, None)
+    result = invoke("gui")
+    assert result.exit_code == 1
+    assert f"the gui extra ({missing} is missing)" in result.stderr
+    assert "pip install 'sift[gui]'" in result.stderr
+
+
+def test_gui_without_tkinter_exits_1(
+    monkeypatch: pytest.MonkeyPatch, mini_cli
+) -> None:
+    monkeypatch.delitem(sys.modules, "sift.gui.tk_app", raising=False)
+    monkeypatch.setitem(sys.modules, "tkinter", None)
+    result = invoke("gui")
+    assert result.exit_code == 1
+    assert "needs tkinter" in result.stderr
+
+
+def test_version_does_not_import_the_gui() -> None:
+    code = (
+        "import sys, sift.cli as c; c.main(['--version']); "
+        "bad = [m for m in ('tkinter', 'sv_ttk', 'darkdetect') "
+        "if m in sys.modules]; assert not bad, bad"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr

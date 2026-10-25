@@ -17,7 +17,8 @@ in memory, and logs the query in ``sift.db`` unless run with
 SIFT_INDEX names another index directory. ``sift serve`` serves the
 index over HTTP with FastAPI on uvicorn (``sift.server.app``, the
 ``web`` extra); ``sift serve --raw`` uses the hand-written asyncio
-server of ``sift.server.raw`` instead.
+server of ``sift.server.raw`` instead. ``sift gui`` opens the search
+window (``sift.gui.tk_app``, tkinter, the ``gui`` extra).
 
 Output goes through rich (``sift.render``) only on a terminal; in a
 pipe, with ``--json`` or with NO_COLOR set it is plain text: the
@@ -661,6 +662,44 @@ def run_serve(
             quiet=quiet,
         )
     )
+
+
+@app.command("gui", help="Open the search window.")
+def run_gui(
+    tk: Annotated[
+        bool,
+        typer.Option(
+            "--tk",
+            help="Use the tkinter window (the only one until chapter 21).",
+        ),
+    ] = False,
+) -> None:
+    """Open the search window on the index and run it until it closes.
+
+    Raise IndexMissingError (exit 4) if there is no index and
+    SiftError (exit 1) if there is no display, the Python has no
+    tkinter or the gui extra is not installed. ``--tk`` is the
+    default and the only toolkit for now.
+    """
+    from sift.config import load_config
+
+    config = load_config()
+    directory = index_dir(config)
+    require_index(directory)
+    try:
+        from sift.gui.controller import IndexBackend
+        from sift.gui.tk_app import run
+    except ModuleNotFoundError as error:
+        if error.name in ("tkinter", "_tkinter"):
+            raise SiftError(
+                "sift gui needs tkinter, and this Python was built without it"
+            ) from None
+        raise SiftError(
+            f"sift gui needs the gui extra ({error.name} is missing): "
+            "pip install 'sift[gui]'"
+        ) from None
+    with searching(directory, config) as searcher:
+        run(IndexBackend(searcher, config.limit))
 
 
 def print_flushed(text: str) -> None:

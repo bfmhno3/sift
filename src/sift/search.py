@@ -139,6 +139,16 @@ class Searcher:
                         terms.update(found)
         return terms
 
+    def highlight_terms(self, query: str) -> set[str]:
+        """Return the index terms of the positive words of query.
+
+        These are the terms ``search`` highlights in a snippet; a
+        program that shows a whole document marks them with
+        ``sift.snippet.highlight``. Raise QuerySyntaxError for a
+        malformed query.
+        """
+        return self._highlight_terms(positive_leaves(parse(query)))
+
     def search(self, query: str, limit: int = 10) -> SearchResult:
         """Return the best limit documents for query.
 

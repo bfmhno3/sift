@@ -1,5 +1,6 @@
 """Shared fixtures: the mini corpus, parsed and indexed once."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -42,3 +43,9 @@ def mini_index(mini_docs: list[Document]) -> InvertedIndex:
 def searcher(mini_index: InvertedIndex) -> Searcher:
     """Return a Searcher over the fixture posts, new for every test."""
     return Searcher(mini_index)
+
+
+# The window tests need a display: test_tk_window.py runs them under
+# Xvfb, with this variable set.
+if not os.environ.get("SIFT_TK_DISPLAY_TESTS"):
+    collect_ignore_glob = ["tk_display/*"]

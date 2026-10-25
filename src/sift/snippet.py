@@ -74,6 +74,25 @@ def _hit_spans(
     return spans
 
 
+def highlight(
+    text: str, terms: Collection[str]
+) -> tuple[str, list[tuple[int, int]]]:
+    """Return the text to show and the (start, end) offsets of hits.
+
+    The whole text, with its line breaks, unlike ``make_snippet``.
+    The offsets are into the returned text, which is ``text`` itself
+    except in the rare case where only the folded text has offsets
+    that match (see ``_origin``). terms are index terms (analyzed).
+
+    >>> highlight("The Fox ran", {"fox"})
+    ('The Fox ran', [(4, 7)])
+    >>> highlight("one two", {"zebra"})
+    ('one two', [])
+    """
+    shown, table = _origin(text)
+    return shown, _hit_spans(text, table, terms)
+
+
 def _squeeze(text: str) -> str:
     """Collapse every run of whitespace in text to one space."""
     return _SPACES.sub(" ", text)
