@@ -18,9 +18,11 @@ The layout is a grid with 16 px between the parts::
 
 ``SearchWindow`` only draws. What a click or a key means is in
 ``sift.gui.controller``: the window is its ``View``. A search runs on
-a worker thread; the answer comes back through a ``queue.Queue`` that
-``root.after(30, ...)`` polls on the UI thread, because a Tk widget
-may only be touched from the thread that made it.
+a worker thread that only puts data on a ``queue.Queue`` and never
+touches a widget; ``root.after(30, ...)`` polls the queue on the UI
+thread. Tk does accept a widget call from another thread, but the
+call blocks the caller until the UI thread services it, and hangs
+for good if the UI thread is waiting for that caller.
 
 ``darkdetect`` has no type information and ``sv_ttk`` is used only
 through ``apply_sun_valley``: the two small functions at the top are
@@ -260,6 +262,7 @@ class SearchWindow:
             wrap="word",
             state="disabled",
             font=self.body_font,
+            spacing1=line // 2,
             spacing2=line // 2,
             padx=PAD,
             pady=PAD,

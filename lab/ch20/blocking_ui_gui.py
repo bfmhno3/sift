@@ -64,7 +64,7 @@ def run_case(root: tk.Tk, button: ttk.Button, threaded: bool) -> Ticker:
 
             root.after(30, check)
         else:
-            work()  # the UI thread sleeps: nothing is redrawn
+            work()  # BAD: the UI thread sleeps, nothing is redrawn
             done.set(True)
 
     button.configure(command=on_click)

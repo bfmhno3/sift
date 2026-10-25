@@ -179,7 +179,14 @@ class Failed:
     text: str
 
 
-type Message = Done | Failed
+@dataclass(frozen=True, slots=True)
+class Skipped:
+    """Message of the worker: ``ident`` was superseded, not run."""
+
+    ident: int
+
+
+type Message = Done | Failed | Skipped
 type Spawn = Callable[[Callable[[], None]], None]
 
 
@@ -212,8 +219,11 @@ class Controller:
         self.view = view
         self._spawn = spawn
         self._messages = queue.Queue[Message]()
-        self._latest = 0
+        self._search_lock = threading.Lock()
+        self._latest = 0  # only ever grows
         self._outcome: Outcome | None = None
+        # what the preview shows: (outcome, row index), None if unknown
+        self._shown: tuple[Outcome | None, int | None] | None = None
         self.pending = 0
 
     def submit(self, text: str) -> bool:
@@ -236,18 +246,29 @@ class Controller:
         return True
 
     def _work(self, ident: int, query: str) -> None:
-        """Search and queue the answer. Runs on the worker thread."""
+        """Search and queue the answer. Runs on the worker thread.
+
+        One search runs at a time. A request that waited for the lock
+        and is no longer the newest is skipped: its answer would be
+        dropped anyway, and the newest must not wait behind it.
+        """
         message: Message
-        try:
-            message = Done(ident, self.backend.search(query))
-        except QuerySyntaxError as error:
-            message = Failed(ident, error.render())
-        except SiftError as error:
-            message = Failed(ident, f"error: {error}")
-        except Exception as error:
-            # a bug must reach the status line, not die with the thread
-            log.exception("search failed")
-            message = Failed(ident, f"error: {type(error).__name__}: {error}")
+        with self._search_lock:
+            if ident != self._latest:
+                message = Skipped(ident)
+            else:
+                try:
+                    message = Done(ident, self.backend.search(query))
+                except QuerySyntaxError as error:
+                    message = Failed(ident, error.render())
+                except SiftError as error:
+                    message = Failed(ident, f"error: {error}")
+                except Exception as error:
+                    # a bug must reach the status line, not die here
+                    log.exception("search failed")
+                    message = Failed(
+                        ident, f"error: {type(error).__name__}: {error}"
+                    )
         self._messages.put(message)
 
     def poll(self) -> int:
@@ -275,6 +296,7 @@ class Controller:
         match message:
             case Done(_, outcome):
                 self._outcome = outcome
+                self._shown = None
                 self.view.show_results(outcome.rows)
                 self.view.show_status(outcome.status(), error=False)
                 if outcome.rows:
@@ -284,14 +306,27 @@ class Controller:
                     self.view.show_preview(None)
             case Failed(_, text):
                 self._outcome = None
+                self._shown = None
                 self.view.show_results([])
                 self.view.show_preview(None)
                 self.view.show_status(text, error=True)
+            case Skipped():
+                pass  # never the newest: poll does not get here
 
     def select(self, index: int | None) -> None:
-        """Show the preview of row index, or none."""
+        """Show the preview of row index, or none.
+
+        Nothing is redrawn if the preview already shows that row of
+        this outcome: the window reports a selection that the
+        controller made itself.
+        """
         outcome = self._outcome
+        shown = self._shown
+        if shown is not None and shown[0] is outcome and shown[1] == index:
+            return
         if outcome is None or index is None:
+            self._shown = (outcome, index)
             self.view.show_preview(None)
         elif 0 <= index < len(outcome.previews):
+            self._shown = (outcome, index)
             self.view.show_preview(outcome.previews[index])

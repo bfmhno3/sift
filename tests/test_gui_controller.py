@@ -26,6 +26,7 @@ class FakeView:
         self.selected: int | None = None
         self.statuses: list[tuple[str, bool]] = []
         self.preview: Preview | None = None
+        self.renders: list[Preview | None] = []
 
     def show_busy(self, busy: bool) -> None:
         self.busy.append(busy)
@@ -41,6 +42,7 @@ class FakeView:
 
     def show_preview(self, preview: Preview | None) -> None:
         self.preview = preview
+        self.renders.append(preview)
 
 
 def outcome(query: str, titles: list[str], took: float = 1.5) -> Outcome:
@@ -242,3 +244,84 @@ def test_index_backend_limit_and_syntax_error(searcher: Searcher) -> None:
     assert len(backend.search("tea OR bicycle").rows) == 1
     with pytest.raises(QuerySyntaxError):
         backend.search("(tea")
+
+
+def test_a_burst_runs_only_the_newest_query(view: FakeView) -> None:
+    gate = threading.Event()
+    entered = threading.Event()
+    calls: list[str] = []
+
+    class Slow:
+        def search(self, query: str) -> Outcome:
+            calls.append(query)
+            entered.set()
+            assert gate.wait(5)
+            return outcome(query, [query])
+
+    threads: list[threading.Thread] = []
+
+    def spawn(work: Callable[[], None]) -> None:
+        thread = threading.Thread(target=work, daemon=True)
+        threads.append(thread)
+        thread.start()
+
+    controller = Controller(Slow(), view, spawn=spawn)
+    controller.submit("q1")
+    assert entered.wait(5)  # q1 holds the lock
+    for n in range(2, 7):
+        controller.submit(f"q{n}")
+    assert controller.pending == 6
+    gate.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert controller.poll() == 6
+    assert controller.pending == 0
+    # q1 had started; q2 to q5 were skipped; q6 ran
+    assert calls == ["q1", "q6"]
+    assert [r.title for r in view.rows] == ["q6"]
+    assert view.statuses[-1] == ("1 条结果，1.5 ms", False)
+    assert view.busy[-1] is False
+
+
+def test_a_skipped_request_is_never_shown(view: FakeView) -> None:
+    started: list[Callable[[], None]] = []
+    backend = FakeBackend({"first": ["old"], "second": ["new"]})
+    controller = Controller(backend, view, spawn=started.append)
+    controller.submit("first")
+    controller.submit("second")
+    for work in started:
+        work()
+    assert backend.calls == ["second"]
+    assert controller.poll() == 2
+    assert [r.title for r in view.rows] == ["new"]
+
+
+def test_one_search_renders_the_preview_once(
+    controller: Controller, view: FakeView
+) -> None:
+    controller.submit("rust")
+    controller.poll()
+    assert len(view.renders) == 1
+    controller.select(0)  # the window echoes the selection
+    assert len(view.renders) == 1
+    controller.select(1)
+    assert len(view.renders) == 2
+    controller.select(1)
+    assert len(view.renders) == 2
+
+
+def test_a_new_search_renders_even_the_same_row(
+    controller: Controller, view: FakeView
+) -> None:
+    controller.submit("rust")
+    controller.poll()
+    controller.submit("(oops")
+    controller.poll()
+    controller.submit("rust")
+    controller.poll()
+    assert [r.title if r else None for r in view.renders] == [
+        "a",
+        None,
+        "a",
+    ]
