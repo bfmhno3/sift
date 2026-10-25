@@ -132,7 +132,7 @@ END_OF_HEAD = b"\r\n\r\n"
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _TARGET = re.compile(r"/[\x21-\x7e]*")
 _VALUE = re.compile(r"[\t\x20-\x7e]*")
-_LOOPBACK_HOST = re.compile(
+LOOPBACK_HOST = re.compile(
     r"(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?", re.IGNORECASE
 )
 
@@ -491,7 +491,7 @@ class RawServer:
         if (
             self.check_host
             and host is not None
-            and not _LOOPBACK_HOST.fullmatch(host)
+            and not LOOPBACK_HOST.fullmatch(host)
         ):
             raise _bad("Host not allowed", head_only=head_only)
         path = request.path

@@ -7,6 +7,7 @@ import pytest
 from sift.corpus import iter_documents
 from sift.document import Document
 from sift.index import IndexWriter, InvertedIndex
+from sift.search import Searcher
 
 MINI = Path(__file__).parent / "fixtures" / "mini"
 
@@ -35,3 +36,9 @@ def mini_index(mini_docs: list[Document]) -> InvertedIndex:
         for doc in mini_docs:
             writer.add(doc)
     return index
+
+
+@pytest.fixture
+def searcher(mini_index: InvertedIndex) -> Searcher:
+    """Return a Searcher over the fixture posts, new for every test."""
+    return Searcher(mini_index)

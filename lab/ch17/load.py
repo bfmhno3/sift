@@ -1,6 +1,9 @@
 """Send concurrent GET requests; report req/s and latency.
 
-Each client opens a connection per request, one after the other. The
+Each client opens a connection per request, one after the other, and
+asks the server to close it (``Connection: close``: a server that keeps
+connections alive, like uvicorn, would otherwise hold each one open
+until its keep-alive timeout, and the read would wait for it). The
 paths are the queries of --queries as /search?q=... (with &limit=N if
 --limit is given), or the single path of --target.
 
@@ -22,7 +25,9 @@ from urllib.parse import quote
 async def fetch(host: str, port: int, target: str) -> int:
     """Open a connection, send one GET, return the status code."""
     reader, writer = await asyncio.open_connection(host, port)
-    request = f"GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n"
+    request = (
+        f"GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )
     writer.write(request.encode())
     await writer.drain()
     answer = await reader.read()  # the server closes after one answer

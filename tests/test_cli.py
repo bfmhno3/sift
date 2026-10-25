@@ -1,5 +1,6 @@
 """Tests for the command line in sift.cli."""
 
+import asyncio
 import io
 import json
 import os
@@ -414,10 +415,11 @@ def test_version_and_bench_do_not_import_sqlalchemy() -> None:
         ["search", "--limit", "0", "a"],
         ["search", "--limit", "101", "a"],
         ["search", "--limit", "x", "a"],
-        ["serve"],
+        ["serve", "--port", "x"],
+        ["serve", "--port", "-1"],
+        ["serve", "--port", "65536"],
+        ["serve", "--max-pending", "0"],
         ["serve", "--raw", "--port", "x"],
-        ["serve", "--raw", "--port", "-1"],
-        ["serve", "--raw", "--port", "65536"],
         ["serve", "--raw", "--max-pending", "0"],
     ],
 )
@@ -621,40 +623,57 @@ def test_limit_above_the_maximum_is_a_usage_error(
     assert "between 1 and 100" in capsys.readouterr().err
 
 
+# FastAPI on uvicorn is the default; --raw is the server of chapter 17
+SERVERS = pytest.mark.parametrize(
+    "flags", [[], ["--raw"]], ids=["fastapi", "raw"]
+)
+
+
+@SERVERS
 def test_serve_without_an_index_exits_4(
+    flags: list[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    assert run_main("serve", "--raw", "--port", "0") == 4
+    assert run_main("serve", *flags, "--port", "0") == 4
     assert "run 'sift index' first" in capsys.readouterr().err
 
 
+@SERVERS
 def test_serve_on_a_busy_port_exits_1(
-    mini_cli, capsys: pytest.CaptureFixture[str]
+    flags: list[str], mini_cli, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
         port = taken.getsockname()[1]
-        assert run_main("serve", "--raw", "--port", str(port)) == 1
+        assert run_main("serve", *flags, "--port", str(port)) == 1
     err = capsys.readouterr().err
     assert err == (
         f"error: cannot listen on 127.0.0.1:{port}: address already in use\n"
     )
 
 
-def test_serve_answers_and_stops_on_sigterm(mini_cli, tmp_path: Path) -> None:
+def start_server(tmp_path: Path, *flags: str) -> subprocess.Popen[str]:
+    """Start ``python -m sift serve`` on a free port in tmp_path."""
     env = {k: v for k, v in os.environ.items() if k != "SIFT_INDEX"}
-    server = subprocess.Popen(
-        [sys.executable, "-m", "sift", "serve", "--raw", "--port", "0"],
+    return subprocess.Popen(
+        [sys.executable, "-m", "sift", "serve", "--port", "0", *flags],
         cwd=tmp_path,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+
+
+@SERVERS
+def test_serve_answers_and_stops_on_sigterm(
+    flags: list[str], mini_cli, tmp_path: Path
+) -> None:
+    server = start_server(tmp_path, *flags)
     try:
         assert server.stdout is not None
         banner = server.stdout.readline().strip()
@@ -671,20 +690,15 @@ def test_serve_answers_and_stops_on_sigterm(mini_cli, tmp_path: Path) -> None:
         if server.poll() is None:
             server.kill()
         server.communicate()
-    assert " GET /search?q=chain 200 " in log
+    assert "GET /search?q=chain" in log
+    assert " 200" in log
 
 
-def test_serve_quiet_logs_no_requests(mini_cli, tmp_path: Path) -> None:
-    env = {k: v for k, v in os.environ.items() if k != "SIFT_INDEX"}
-    server = subprocess.Popen(
-        [sys.executable, "-m", "sift", "serve", "--raw", "--port", "0"]
-        + ["--quiet"],
-        cwd=tmp_path,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+@SERVERS
+def test_serve_quiet_logs_no_requests(
+    flags: list[str], mini_cli, tmp_path: Path
+) -> None:
+    server = start_server(tmp_path, "--quiet", *flags)
     try:
         assert server.stdout is not None
         url = server.stdout.readline().strip().removeprefix("listening on ")
@@ -698,3 +712,43 @@ def test_serve_quiet_logs_no_requests(mini_cli, tmp_path: Path) -> None:
         if server.poll() is None:
             server.kill()
         server.communicate()
+
+
+@SERVERS
+def test_serve_is_asked_with_the_clients(
+    flags: list[str], mini_cli, tmp_path: Path
+) -> None:
+    from sift.client import AsyncSiftClient, SiftClient
+
+    server = start_server(tmp_path, "--quiet", *flags)
+    try:
+        assert server.stdout is not None
+        url = server.stdout.readline().strip().removeprefix("listening on ")
+        with SiftClient(url) as client:
+            assert client.health().docs == 8
+            hit = client.search("chain", limit=1).hits[0]
+            assert client.document(hit.doc_id).title == hit.title
+
+        async def ask() -> int:
+            async with AsyncSiftClient(url) as client:
+                return (await client.health()).docs
+
+        assert asyncio.run(ask()) == 8
+        server.send_signal(signal.SIGTERM)
+        assert server.wait(timeout=10) == 0
+    finally:
+        if server.poll() is None:
+            server.kill()
+        server.communicate()
+
+
+def test_serve_without_the_web_extra_says_so(
+    mini_cli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setitem(sys.modules, "sift.server.app", None)
+    assert run_main("serve", "--port", "0") == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: sift serve needs the web extra")
+    assert "--raw" in err

@@ -9,9 +9,10 @@ SiftError.
 ``sift search`` maps the segment file instead of rebuilding the index
 in memory, and logs the query in ``sift.db`` unless run with
 ``--no-log``; ``sift stats`` lists the last ten logged queries.
-SIFT_INDEX names another index directory. ``sift serve --raw`` serves
-the index over HTTP with the hand-written asyncio server of
-``sift.server.raw``.
+SIFT_INDEX names another index directory. ``sift serve`` serves the
+index over HTTP with FastAPI on uvicorn (``sift.server.app``, the
+``web`` extra); ``sift serve --raw`` uses the hand-written asyncio
+server of ``sift.server.raw`` instead.
 
 The storage modules (and with them SQLAlchemy) are imported by the
 commands that use them, so ``sift --version`` and ``sift bench index``
@@ -28,7 +29,8 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,7 +58,8 @@ from sift.parallel import (
 )
 from sift.query import parse
 from sift.search import Searcher
-from sift.server.raw import MAX_PENDING, serve
+from sift.server.raw import MAX_PENDING
+from sift.server.raw import serve as serve_raw
 from sift.snippet import render_plain
 from sift.util import timed
 
@@ -367,36 +370,69 @@ def run_open(args: argparse.Namespace) -> None:
         raise SiftError(f"{editor} exited with status {done.returncode}")
 
 
-def run_serve(args: argparse.Namespace) -> None:
-    """Serve /search, /docs/<id> and /health until SIGTERM or Ctrl-C.
-
-    Raise IndexMissingError (exit 4) if there is no index and
-    SiftError (exit 1) if the address cannot be bound. The URL is
-    printed on stdout once the socket listens.
-    """
+@contextmanager
+def searching(directory: Path, config: Config) -> Generator[Searcher]:
+    """Open the index in directory and yield a Searcher over it."""
     from sift.storage.store import open_index
 
-    config = load_config()
-    directory = index_dir(config)
-    require_index(directory)
-    setup_logging("WARNING" if args.quiet else "INFO")
     with open_index(directory) as index:
-        searcher = Searcher(
+        yield Searcher(
             index,
             k1=config.k1,
             b=config.b,
             pipeline=build_pipeline(index.pipeline_names),
         )
-        asyncio.run(
-            serve(
-                searcher,
-                config,
-                args.host,
-                args.port,
-                announce=lambda text: print(text, flush=True),
-                max_pending=args.max_pending,
+
+
+def run_serve(args: argparse.Namespace) -> None:
+    """Serve /search, /docs/<id> and /health until SIGTERM or Ctrl-C.
+
+    FastAPI on uvicorn, or with --raw the hand-written server. Raise
+    IndexMissingError (exit 4) if there is no index and SiftError
+    (exit 1) if the address cannot be bound or FastAPI is not
+    installed. The URL is printed on stdout once the socket listens.
+    """
+    config = load_config()
+    directory = index_dir(config)
+    require_index(directory)
+    setup_logging("WARNING" if args.quiet else "INFO")
+    announce = print_flushed
+    if args.raw:
+        with searching(directory, config) as searcher:
+            asyncio.run(
+                serve_raw(
+                    searcher,
+                    config,
+                    args.host,
+                    args.port,
+                    announce=announce,
+                    max_pending=args.max_pending,
+                )
             )
+        return
+    try:
+        from sift.server.app import serve
+    except ModuleNotFoundError as error:
+        raise SiftError(
+            f"sift serve needs the web extra ({error.name} is missing): "
+            "pip install 'sift[web]', or use --raw"
+        ) from None
+    asyncio.run(
+        serve(
+            lambda: searching(directory, config),
+            config,
+            args.host,
+            args.port,
+            announce=announce,
+            max_pending=args.max_pending,
+            quiet=args.quiet,
         )
+    )
+
+
+def print_flushed(text: str) -> None:
+    """Print text and flush: scripts wait for the line."""
+    print(text, flush=True)
 
 
 def print_bench_table(
@@ -547,8 +583,10 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument(
         "--raw",
         action="store_true",
-        required=True,
-        help="the hand-written asyncio server (the only one so far)",
+        help=(
+            "use the hand-written asyncio server of chapter 17 instead "
+            "of FastAPI on uvicorn"
+        ),
     )
     cmd.add_argument(
         "--host",

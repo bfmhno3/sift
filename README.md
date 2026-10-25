@@ -44,7 +44,9 @@ The posts live at <https://bfmhno3.github.io>.
 pyproject.toml       package metadata (hatchling), pytest settings, the `sift` script
 sift.toml            settings: corpus, index directory, analysis pipeline, BM25
 src/sift/            the package (parallel.py: process, thread and interpreter pools;
-                     server/raw.py: the hand-written asyncio HTTP server)
+                     server/raw.py: the hand-written asyncio HTTP server;
+                     server/app.py, models.py: the FastAPI server and its pydantic models;
+                     client.py: httpx clients, sync and async)
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -79,11 +81,19 @@ sift search --limit 3 rust
 sift index --full --jobs 4 --mode thread   # modes: process, thread, interp
 sift bench index --repeat 8 --jobs 1,2,4,8 --mode process,thread,interp
 PYTHONPATH=src python3.14t -m sift bench index --mode thread   # free-threaded, no venv
-sift serve --raw --port 8000   # /search?q=..., /docs/<id>, /health as JSON;
+sift serve --port 8000         # FastAPI on uvicorn (needs the web extra): /search?q=...,
+                               # /docs/<id>, /health as JSON, OpenAPI at /api/docs;
                                # no authentication, 127.0.0.1 by default; answers
                                # carry document paths as indexed (absolute ones leak)
+sift serve --raw --port 8000   # the same routes on the hand-written asyncio server
 python3 lab/ch17/load.py --port 8000 --clients 100 --requests 20
 ```
+
+## Optional dependencies
+
+`pip install 'sift[web]'` adds `fastapi`, `uvicorn`, `httpx` and `pydantic`: `sift serve` (without `--raw`),
+`sift.client` and the tests of the FastAPI server need them. The Nix dev shell provides them. The core (`sift index`,
+`sift search`, `sift serve --raw`) needs only SQLAlchemy.
 
 ## Corpus license
 

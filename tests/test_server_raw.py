@@ -76,12 +76,6 @@ async def get(port: int, target: str, method: str = "GET") -> Answer:
     return await talk(port, request.encode())
 
 
-@pytest.fixture
-def searcher(mini_index: InvertedIndex) -> Searcher:
-    """Return a Searcher over the fixture posts, new for every test."""
-    return Searcher(mini_index)
-
-
 @asynccontextmanager
 async def running(searcher: Searcher, **options: float) -> AsyncIterator[int]:
     """Serve searcher on a free port; yield the port."""
