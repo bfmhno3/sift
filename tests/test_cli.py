@@ -462,6 +462,63 @@ def test_help_has_no_escape_codes_and_keeps_square_brackets() -> None:
     assert "--limit" in out and "--json" in out and "--no-log" in out
 
 
+BOX = set("╭╮╰╯│─┃━┏┓┗┛┌┐└┘├┤┬┴┼")
+
+
+def test_help_and_usage_errors_are_plain_in_a_pipe() -> None:
+    help_out = invoke("--help").stdout
+    assert not BOX & set(help_out)
+    assert "Usage: sift [OPTIONS] COMMAND [ARGS]..." in help_out
+    assert "Exit codes: 0 ok, 2 usage" in help_out
+    result = invoke("search", "--limit", "101", "a")
+    assert result.exit_code == 2
+    assert not BOX & set(result.stderr + result.stdout)
+    assert "Error: Invalid value for '--limit'" in result.stderr
+    assert "Usage: sift search" in result.stderr
+
+
+@pytest.mark.parametrize("path", COMMANDS, ids=" ".join)
+def test_help_has_no_box_in_a_pipe(path: list[str]) -> None:
+    assert not BOX & set(invoke(*path, "--help").stdout)
+
+
+def test_no_color_and_dumb_terminals_get_plain_help(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in (("NO_COLOR", "1"), ("TERM", "dumb")):
+        monkeypatch.setenv(name, value)
+        assert cli.markup_mode() is None
+        monkeypatch.delenv(name)
+        monkeypatch.setenv("TERM", "xterm")
+
+
+def test_a_terminal_gets_rich_help_and_usage_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sift import render
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(render, "wants_rich", lambda stream: True)
+    assert cli.markup_mode() == "rich"
+    monkeypatch.setattr(cli.app, "rich_markup_mode", cli.markup_mode())
+    monkeypatch.setattr(cli.bench_app, "rich_markup_mode", cli.markup_mode())
+    assert BOX & set(invoke("--help").stdout)
+    result = invoke("search", "--limit", "101", "a")
+    assert result.exit_code == 2
+    assert BOX & set(result.stderr)
+
+
+def test_one_terminal_stream_is_not_enough_for_rich_help(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sift import render
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(render, "wants_rich", lambda s: s is sys.stdout)
+    assert cli.markup_mode() is None
+
+
 def test_serve_help_shows_the_same_default_as_the_raw_server() -> None:
     from sift.server.raw import MAX_PENDING
 

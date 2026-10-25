@@ -68,7 +68,7 @@ def snippet_text(parts: Parts) -> Text:
 
 
 def hit_table(result: SearchResult) -> Table:
-    """Return the table of the hits: rank, score, title, path, snippet."""
+    """Return the hits as a table: rank, score, title, path, snippet."""
     from rich import box
     from rich.table import Table
     from rich.text import Text
@@ -168,14 +168,14 @@ def index_progress() -> Generator[Callable[[int, int], None] | None]:
 
 
 def install_traceback() -> None:
-    """Make uncaught exceptions print as rich tracebacks (``--debug``)."""
+    """Print uncaught exceptions as rich tracebacks (``--debug``)."""
     from rich.traceback import install
 
     install(show_locals=False)
 
 
 def print_traceback() -> None:
-    """Print the exception being handled as a rich traceback on stderr."""
+    """Print the exception being handled as a rich traceback."""
     from rich.console import Console
 
     Console(stderr=True).print_exception(show_locals=False)

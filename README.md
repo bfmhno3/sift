@@ -99,7 +99,8 @@ python3 lab/ch17/load.py --port 8000 --clients 100 --requests 20
 
 `sift` needs SQLAlchemy, typer (with click) and rich. rich output (the hit table, the progress bar of `sift index`,
 `--debug` tracebacks, coloured log lines) is used only when the stream is a terminal, `NO_COLOR` is unset and `TERM` is
-not `dumb`; in a pipe, with `--json` or in a test the commands print the plain text of chapter 18.
+not `dumb`; in a pipe, with `--json` or in a test the commands print the plain text of chapter 18. The help and the
+usage errors are drawn with boxes only when both stdout and stderr are terminals; otherwise they are click's plain text.
 
 ## Optional dependencies
 

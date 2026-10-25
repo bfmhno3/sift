@@ -20,9 +20,12 @@ index over HTTP with FastAPI on uvicorn (``sift.server.app``, the
 server of ``sift.server.raw`` instead.
 
 Output goes through rich (``sift.render``) only on a terminal; in a
-pipe, with ``--json`` or with NO_COLOR set it is the plain text of
-chapter 18. ``--debug`` logs at DEBUG level and prints uncaught
-exceptions, and the errors below, as rich tracebacks.
+pipe, with ``--json`` or with NO_COLOR set it is plain text: the
+output of the commands is the text of chapter 18, and the help and
+the usage errors are click's plain text, without boxes.
+
+``--debug`` logs at DEBUG level and prints uncaught exceptions, and
+the errors below, as rich tracebacks.
 
 The storage modules (and with them SQLAlchemy), asyncio and rich are
 imported by the commands that use them, so ``sift --version`` and
@@ -37,7 +40,7 @@ from collections import Counter
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 import click
 import typer
@@ -78,7 +81,7 @@ class SiftGroup(TyperGroup):
     """
 
     def invoke(self, ctx: click.Context) -> object:
-        """Run the command; print a Sift error and exit with its code."""
+        """Run the command; print a Sift error, exit with its code."""
         try:
             return super().invoke(ctx)
         except QuerySyntaxError as error:
@@ -112,8 +115,21 @@ def fail(
     ctx.exit(code)
 
 
+def markup_mode() -> Literal["rich"] | None:
+    """Return "rich" if help and usage errors may be drawn, else None.
+
+    None makes typer print click's plain text. Both streams must be
+    terminals: help goes to stdout, usage errors to stderr, and
+    ``2>&1 | cat`` must give no boxes either.
+    """
+    if render.wants_rich(sys.stdout) and render.wants_rich(sys.stderr):
+        return "rich"
+    return None
+
+
 app = typer.Typer(
     cls=SiftGroup,
+    rich_markup_mode=markup_mode(),
     name="sift",
     help="Search the Markdown posts of a blog.",
     epilog=(
@@ -124,7 +140,9 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 bench_app = typer.Typer(
-    help="Time indexing or searching.", no_args_is_help=True
+    help="Time indexing or searching.",
+    no_args_is_help=True,
+    rich_markup_mode=markup_mode(),
 )
 app.add_typer(bench_app, name="bench")
 
