@@ -25,6 +25,7 @@ from sift.search import Searcher, SearchResult
 from sift.server.app import (
     LIMIT_MAX,
     LIMIT_MIN,
+    Abandoned,
     Runtime,
     create_app,
     listen,
@@ -67,6 +68,20 @@ SAME_AS_RAW = [
     "/search?q=%22unclosed",
     "/nope",
     "/docs",
+    "/health/",
+    "/search/?q=a",
+    "/docs/1/",
+    "/docs/",
+    "/docs/1/2",
+    "/docs/oauth2-redirect",
+    "/search?q=%FF",
+    "/search?q=a&x",
+    "/search?q=a&q=b",
+    "/search?" + "&".join(f"p{i}=1" for i in range(21)) + "&q=a",
+    "/search?q=a&limit=" + "9" * 5000,
+    "/search?q=a&limit=" + "0" * 5000 + "5",
+    "/search?q=a&limit=1000",
+    "/nope?x",
 ]
 
 
@@ -579,3 +594,156 @@ def test_serve_raises_the_error_of_the_lifespan(searcher: Searcher) -> None:
             )
         )
     assert announced == []
+
+
+# -- idle connections, shutdown -----------------------------------------
+
+
+def test_idle_sockets_are_closed_and_do_not_lock_the_server_out(
+    searcher: Searcher,
+) -> None:
+    """Silent connections fill the cap; the head timeout frees them."""
+    announced: list[str] = []
+    timeout = 0.5
+    idle = 12
+
+    async def status(port: int) -> int:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        await writer.drain()
+        answer = await reader.read()
+        writer.close()
+        return int(answer.split(b" ", 2)[1])
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            serve(
+                lambda: nullcontext(searcher),
+                Config(),
+                "127.0.0.1",
+                0,
+                announce=announced.append,
+                max_connections=idle,
+                read_timeout=timeout,
+                quiet=True,
+            )
+        )
+        while not announced and not task.done():
+            await asyncio.sleep(0.01)
+        port = int(announced[0].rsplit(":", 1)[1])
+        sockets = [
+            await asyncio.open_connection("127.0.0.1", port)
+            for _ in range(idle)
+        ]
+        await asyncio.sleep(0.1)
+        assert await status(port) == 503  # the cap is full of silence
+        await asyncio.sleep(timeout + 0.5)
+        for reader, writer in sockets:
+            assert await asyncio.wait_for(reader.read(), 2) == b""
+            writer.close()
+        assert await status(port) == 200
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(task, 10)
+
+    asyncio.run(scenario())
+
+
+def test_a_connection_with_a_request_is_not_closed_by_the_head_timer(
+    searcher: Searcher,
+) -> None:
+    announced: list[str] = []
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            serve(
+                lambda: nullcontext(searcher),
+                Config(),
+                "127.0.0.1",
+                0,
+                announce=announced.append,
+                read_timeout=0.3,
+                quiet=True,
+            )
+        )
+        while not announced and not task.done():
+            await asyncio.sleep(0.01)
+        port = int(announced[0].rsplit(":", 1)[1])
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        request = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        writer.write(request)
+        await writer.drain()
+        assert b"200 OK" in await reader.readuntil(b"}")
+        await asyncio.sleep(0.6)  # past the head timeout, keep-alive
+        writer.write(request)  # the connection must still work
+        await writer.drain()
+        assert b"200 OK" in await reader.readuntil(b"}")
+        writer.close()
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(task, 10)
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_waits_for_the_search_that_runs(
+    searcher: Searcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    real = searcher.search
+
+    def slow_search(query: str, limit: int = 10) -> SearchResult:
+        events.append("search start")
+        time.sleep(0.5)
+        events.append("search end")
+        return real(query, limit)
+
+    monkeypatch.setattr(searcher, "search", slow_search)
+
+    @contextmanager
+    def opened() -> Iterator[Searcher]:
+        try:
+            yield searcher
+        finally:
+            events.append("index closed")
+
+    app = create_app(opened, Config())
+    answers: list[int] = []
+    with TestClient(app) as running:
+        thread = threading.Thread(
+            target=lambda: answers.append(
+                running.get("/search?q=tea").status_code
+            )
+        )
+        thread.start()
+        while "search start" not in events:
+            time.sleep(0.01)
+    thread.join()
+    assert events == ["search start", "search end", "index closed"]
+
+
+def test_a_search_after_the_close_does_not_run(searcher: Searcher) -> None:
+    runtime = runtime_for(searcher)
+    runtime.closed = True
+
+    async def scenario() -> None:
+        with pytest.raises(Abandoned):
+            await runtime.search("tea", 10)
+
+    asyncio.run(scenario())
+
+
+def test_the_client_waits_longer_than_the_server() -> None:
+    from sift.client import TIMEOUT
+    from sift.server.raw import SEARCH_TIMEOUT
+
+    assert TIMEOUT > SEARCH_TIMEOUT
+
+
+def test_a_limit_of_thousands_of_digits_is_400_in_both_servers(
+    searcher: Searcher, client: TestClient
+) -> None:
+    target = "/search?q=a&limit=" + "9" * 5000
+    assert fastapi_answer(client, target)[0] == 400
+    assert raw_answer(searcher, target)[0] == 400

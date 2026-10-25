@@ -11,22 +11,39 @@ Where it differs from the raw server
 
 * ``/docs/<id>`` is a route of Sift, so the Swagger UI and the
   OpenAPI document live under ``/api`` (``/api/docs`` and
-  ``/api/openapi.json``). The raw server has neither.
+  ``/api/openapi.json``). FastAPI would serve them at ``/docs``,
+  where a ``/docs/oauth2-redirect`` page for Swagger's login would
+  answer 200 HTML instead of the 400 ``bad document id`` of the
+  raw server; that page is switched off.
 * Only ``GET`` is routed: ``HEAD`` is 405 with ``Allow: GET``.
 * HTTP/1.1 connections are kept alive (uvicorn closes an idle one
   after 5 s); the raw server answers once and closes.
 * The request head is parsed by h11, not by ``sift.server.raw``:
-  malformed heads get uvicorn's plain-text 400, and a repeated query
-  parameter is not an error (the last one wins).
+  malformed heads get uvicorn's plain-text 400, and the limits on
+  the number of headers differ.
 * The cap on open connections (``MAX_CONNECTIONS``) is uvicorn's
   ``limit_concurrency``: the 503 it sends has a plain-text body.
 * A search whose client has left is not skipped: the search cap and
   the timeout are the same, but nobody checks the connection.
+* A connection that sends no complete head in ``READ_TIMEOUT``
+  seconds is closed, as in the raw server, by a subclass of
+  uvicorn's h11 protocol (``head_timeout_protocol``). It covers the
+  first request of a connection; after a response uvicorn's 5 s
+  keep-alive timer does. uvicorn itself has no such timer, and its
+  concurrency limit counts idle sockets.
+
+These are the same as in the raw server, checked by the tests on the
+same targets: the routes, a trailing slash or a path like
+``/docs/1/2`` (no redirect, same 404 or 400), a query string that is
+not UTF-8, has a bare key, repeats a name or has more than 20
+parameters (``QueryCheck``), and the text of a rejected ``q``,
+``limit`` or document id.
 
 The Host check and the warning for a bind to another address are the
-raw server's: a loopback bind accepts only the loopback names. The
-400 for a rejected ``q``, ``limit`` or document id has the text
-of the raw server; the validators of the parameters see to that.
+raw server's: a loopback bind accepts only the loopback names.
+
+On a shutdown the lifespan handler waits for the search that runs
+before it lets the index close.
 
 Searches run in a worker thread (``anyio.to_thread``): a search is
 CPU work and would stop the event loop. One lock lets one search run
@@ -70,6 +87,7 @@ from fastapi.responses import JSONResponse
 from pydantic import AfterValidator, BeforeValidator, Field
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
+from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from sift import __version__
 from sift.config import Config
@@ -87,8 +105,12 @@ from sift.server.raw import (
     MAX_CONNECTIONS,
     MAX_ID_DIGITS,
     MAX_PENDING,
+    READ_TIMEOUT,
     SEARCH_TIMEOUT,
+    HttpError,
     is_loopback,
+    limit_from_text,
+    parse_params,
 )
 
 logger = logging.getLogger("sift.server.app")
@@ -118,16 +140,14 @@ def parse_limit(value: object) -> int:
     ``" 5 "``, ``"1_0"`` and ``"1.0"``. Raise ValueError, which
     pydantic turns into an error of the field.
     """
-    if isinstance(value, str) and value.isascii() and value.isdecimal():
-        number = int(value)
-    elif isinstance(value, int) and not isinstance(value, bool):
-        number = value
-    else:
-        raise ValueError("limit must be an integer")
-    try:
-        return Config.limit.validate(number)
-    except ConfigError as error:
-        raise ValueError(str(error)) from None
+    if isinstance(value, str):
+        return limit_from_text(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            return Config.limit.validate(value)
+        except ConfigError as error:
+            raise ValueError(str(error)) from None
+    raise ValueError("limit must be an integer")
 
 
 QueryText = Annotated[
@@ -165,6 +185,7 @@ class Runtime:
     search_timeout: float
     lock: threading.Lock = field(default_factory=threading.Lock)
     pending: int = 0  # searches running or waiting; loop thread only
+    closed: bool = False  # the Searcher is closed: no search may start
 
     def _search(
         self, query: str, limit: int, abandoned: threading.Event
@@ -172,10 +193,10 @@ class Runtime:
         """Run one search, alone, in a worker thread.
 
         If the caller stopped waiting while this thread waited for the
-        lock, nothing is run.
+        lock, or the Searcher has been closed, nothing is run.
         """
         with self.lock:
-            if abandoned.is_set():
+            if abandoned.is_set() or self.closed:
                 raise Abandoned
             return self.searcher.search(query, limit)
 
@@ -210,11 +231,14 @@ class Runtime:
             self.pending -= 1
 
 
-def get_runtime(request: Request) -> Runtime:
+async def get_runtime(request: Request) -> Runtime:
     """Return the Runtime that the lifespan handler made.
 
     This is a dependency: FastAPI calls it for every route that
-    declares ``Annotated[Runtime, Depends(get_runtime)]``.
+    declares ``Annotated[Runtime, Depends(get_runtime)]``. It is
+    ``async def`` although it awaits nothing: FastAPI runs a plain
+    ``def`` dependency in a worker thread, which costs three times
+    as much as the lookup.
     """
     runtime = request.app.state.runtime
     if not isinstance(runtime, Runtime):
@@ -288,6 +312,41 @@ class HostCheck:
                     response = error_response(400, "Host not allowed")
                     await response(scope, receive, send)
                     return
+        await self.app(scope, receive, send)
+
+
+class QueryCheck:
+    """Answer 400 to a query string that the raw server rejects.
+
+    Starlette reads a query string leniently: bytes that are not
+    UTF-8 become U+FFFD, a parameter without ``=`` is dropped and
+    the last of two equal names wins. The raw server refuses all
+    three, and more than 20 parameters. This middleware applies
+    ``parse_params`` of the raw server to the query string, so the
+    two servers accept the same requests.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap app."""
+        self.app = app
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        """Pass the request on, or answer 400."""
+        if scope["type"] == "http":
+            try:
+                query = scope["query_string"].decode("ascii")
+            except UnicodeDecodeError:
+                response = error_response(400, "request head is not ASCII")
+                await response(scope, receive, send)
+                return
+            try:
+                parse_params(query, head_only=False)
+            except HttpError as error:
+                response = error_response(error.status.value, error.message)
+                await response(scope, receive, send)
+                return
         await self.app(scope, receive, send)
 
 
@@ -378,10 +437,18 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """Open the Searcher for the life of the server."""
         with open_searcher() as searcher:
-            app.state.runtime = Runtime(
-                searcher, config, max_pending, search_timeout
-            )
-            yield
+            runtime = Runtime(searcher, config, max_pending, search_timeout)
+            app.state.runtime = runtime
+            try:
+                yield
+            finally:
+                # A search that still runs (uvicorn waits GRACE seconds
+                # for requests, a search may take SEARCH_TIMEOUT) must
+                # not find the index closed: wait for the lock, then
+                # forbid new searches and let the index close.
+                await anyio.to_thread.run_sync(runtime.lock.acquire)
+                runtime.closed = True
+                runtime.lock.release()
 
     async def search(
         q: QueryText, runtime: RuntimeDep, limit: Limit = config.limit
@@ -405,9 +472,13 @@ def create_app(
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
+        swagger_ui_oauth2_redirect_url=None,
     )
+    # Starlette would answer 307 to /health/ and the raw server says 404
+    app.router.redirect_slashes = False
     if check_host:
         app.add_middleware(HostCheck)
+    app.add_middleware(QueryCheck)  # last added runs first
     app.add_exception_handler(QuerySyntaxError, syntax_error)
     app.add_exception_handler(RequestValidationError, invalid_request)
     app.add_exception_handler(HTTPException, http_error)
@@ -426,7 +497,7 @@ def create_app(
         summary="Search the index",
     )
     app.add_api_route(
-        "/docs/{doc_id}",
+        "/docs/{doc_id:path}",
         document,
         response_model=DocumentResponse,
         responses={
@@ -502,6 +573,69 @@ def _use_sift_handlers(quiet: bool) -> None:
     access.setLevel(logging.WARNING if quiet else logging.INFO)
 
 
+def head_timeout_protocol(seconds: float) -> type[H11Protocol]:
+    """Return uvicorn's h11 protocol with a timeout for the first head.
+
+    uvicorn arms a timer only after a response, and its concurrency
+    limit counts idle connections: 256 sockets that send nothing
+    would make every request a 503 for ever. Here a connection that
+    has not sent a complete request head ``seconds`` after it was
+    made is closed, as the raw server does with its READ_TIMEOUT. The
+    timer is dropped when the first request is parsed; after a
+    response uvicorn's own keep-alive timer takes over.
+    """
+
+    class HeadTimeoutProtocol(H11Protocol):
+        """H11Protocol that closes a connection that stays silent."""
+
+        _head_timer: asyncio.TimerHandle | None = None
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            """Start the timer."""
+            if not isinstance(transport, asyncio.Transport):
+                raise TypeError("uvicorn gives a stream transport")
+            super().connection_made(transport)
+            loop = asyncio.get_running_loop()
+            self._head_timer = loop.call_later(seconds, self._give_up)
+
+        def _give_up(self) -> None:
+            """Close the connection: no request head came in time."""
+            self._head_timer = None
+            self.transport.close()
+
+        def _stop_timer(self) -> None:
+            """Cancel the timer, if it is still armed."""
+            if self._head_timer is not None:
+                self._head_timer.cancel()
+                self._head_timer = None
+
+        def handle_events(self) -> None:
+            """Stop the timer once a request has been parsed."""
+            super().handle_events()
+            if self.cycle:  # None until the first request is parsed
+                self._stop_timer()
+
+        def connection_lost(self, exc: Exception | None) -> None:
+            """Stop the timer with the connection."""
+            self._stop_timer()
+            super().connection_lost(exc)
+
+    return HeadTimeoutProtocol
+
+
+class QuietStartup(logging.Filter):
+    """Drop what uvicorn logs about a failed start we report ourselves."""
+
+    def __init__(self, failures: list[SiftError]) -> None:
+        """Watch failures: the errors of the lifespan handler."""
+        super().__init__()
+        self.failures = failures
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return False once a SiftError of the start is known."""
+        return not self.failures
+
+
 async def run_server(server: uvicorn.Server, sock: socket.socket) -> None:
     """Run server on sock until it stops.
 
@@ -521,13 +655,18 @@ async def serve(
     *,
     announce: Callable[[str], None],
     max_pending: int = MAX_PENDING,
+    max_connections: int = MAX_CONNECTIONS,
+    read_timeout: float = READ_TIMEOUT,
     quiet: bool = False,
 ) -> None:
     """Serve until SIGTERM, then stop cleanly.
 
     announce gets ``listening on <url>`` once the socket listens and
     the lifespan handler has opened the Searcher. Raise SiftError if
-    host and port cannot be bound or the Searcher cannot be opened.
+    host and port cannot be bound or the Searcher cannot be opened
+    (uvicorn's traceback of that failure is not logged: the error is
+    reported by the caller). max_connections and read_timeout are the
+    MAX_CONNECTIONS and READ_TIMEOUT of the raw server.
     On SIGTERM uvicorn stops accepting, waits up to GRACE seconds for
     the open requests and returns: after that this function returns.
     (uvicorn raises the signal again once it is done; the handler
@@ -542,7 +681,8 @@ async def serve(
         check_host=loopback,
         max_pending=max_pending,
     )
-    sock = listen(host, port, backlog=max(100, MAX_CONNECTIONS))
+    backlog = max(100, max_connections)
+    sock = listen(host, port, backlog)
     if not loopback:
         logger.warning(
             "listening on %s: no authentication, and responses carry "
@@ -550,6 +690,7 @@ async def serve(
             host or "all addresses",
         )
     _use_sift_handlers(quiet)
+    logging.getLogger("uvicorn.error").addFilter(QuietStartup(failures))
     server = uvicorn.Server(
         uvicorn.Config(
             app,
@@ -558,7 +699,9 @@ async def serve(
             server_header=False,
             proxy_headers=False,
             ws="none",
-            limit_concurrency=MAX_CONNECTIONS,
+            http=head_timeout_protocol(read_timeout),
+            backlog=backlog,
+            limit_concurrency=max_connections,
             timeout_graceful_shutdown=int(GRACE),
         )
     )

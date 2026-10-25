@@ -93,6 +93,14 @@ PATHS = [
     "/search?q=(rust",
     "/search?q=rust+AND",
     "/nope",
+    "/health/",
+    "/search/?q=a",
+    "/docs/1/",
+    "/docs/",
+    "/docs/1/2",
+    "/docs/oauth2-redirect",
+    "/search?q=%FF",
+    "/search?q=a&x",
 ]
 
 

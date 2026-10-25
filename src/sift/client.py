@@ -20,7 +20,7 @@ context manager and share it. Errors:
   the message of the server.
 * ``httpx.TransportError`` (``ConnectError``, ``ReadTimeout`` ...):
   the server did not answer; ``timeout`` bounds each phase of a
-  request (connect, write, read, pool), 10 s by default.
+  request (connect, write, read, pool), 15 s by default.
 
 The import of this module needs the ``web`` extra (httpx, pydantic).
 """
@@ -40,7 +40,10 @@ from sift.server.models import (
     SearchResponse,
 )
 
-TIMEOUT = 10.0  # seconds, for each of connect, write, read and pool
+# Seconds for each of connect, write, read and pool. It is longer than
+# the 10 s SEARCH_TIMEOUT of the servers, so that a slow search comes
+# back as ApiError(504) and not as httpx.ReadTimeout.
+TIMEOUT = 15.0
 
 
 class ApiError(SiftError):

@@ -27,7 +27,8 @@ def main() -> None:
         print(f"{error.error_count()} errors")
         for problem in error.errors(include_url=False):
             print(" ", problem["loc"], problem["type"], "-", problem["msg"])
-    # error: pydantic_core.ValidationError: 3 validation errors
+    # error: pydantic_core._pydantic_core.ValidationError:
+    # 3 validation errors for SearchRequest
     SearchRequest(**BAD)
     print("unreachable")
 

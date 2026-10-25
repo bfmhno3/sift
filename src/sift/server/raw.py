@@ -120,6 +120,7 @@ MAX_HEAD = 16 * 1024  # bytes: request line, headers and blank line
 MAX_HEADERS = 100
 MAX_PARAMS = 20
 MAX_ID_DIGITS = 18  # more digits cannot be a doc id: unknown, 404
+MAX_LIMIT_DIGITS = 3  # more digits cannot be a valid limit (max 100)
 MAX_CONNECTIONS = 256  # open connections; more get 503
 MAX_PENDING = 32  # searches running or waiting; more get 503
 SEARCH_TIMEOUT = 10.0  # seconds a search may take before 504
@@ -230,7 +231,25 @@ def _bad(message: str, *, head_only: bool = False) -> HttpError:
     return HttpError(HTTPStatus.BAD_REQUEST, message, head_only=head_only)
 
 
-def _parse_params(query: str, head_only: bool) -> dict[str, str]:
+def limit_from_text(text: str) -> int:
+    """Return the hit count that text spells; raise ValueError if bad.
+
+    The message of the ValueError is the text of the 400. Only ASCII
+    digits are a number. A number with more than MAX_LIMIT_DIGITS
+    digits (after the leading zeros) is out of range whatever it is:
+    it is not converted, because int() refuses thousands of digits.
+    """
+    if not (text.isascii() and text.isdecimal()):
+        raise ValueError("limit must be an integer")
+    digits = text.lstrip("0") or "0"
+    number = int(digits) if len(digits) <= MAX_LIMIT_DIGITS else 10**9
+    try:
+        return Config.limit.validate(number)
+    except ConfigError as error:
+        raise ValueError(str(error)) from None
+
+
+def parse_params(query: str, head_only: bool) -> dict[str, str]:
     """Return the query string as a dict; raise 400 on a bad one."""
     try:
         pairs = parse_qsl(
@@ -308,7 +327,7 @@ def parse_head(head: bytes) -> Request:
         path,
         version,
         headers,
-        _parse_params(rest, head_only),
+        parse_params(rest, head_only),
     )
 
 
@@ -403,11 +422,9 @@ class RawServer:
         text = params.get("limit")
         if text is None:
             return self.config.limit
-        if not (text.isascii() and text.isdecimal()):
-            raise _bad("limit must be an integer", head_only=head_only)
         try:
-            return Config.limit.validate(int(text))
-        except ConfigError as error:
+            return limit_from_text(text)
+        except ValueError as error:
             raise _bad(str(error), head_only=head_only) from None
 
     async def _handle_search(

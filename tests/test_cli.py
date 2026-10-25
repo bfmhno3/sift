@@ -642,6 +642,22 @@ def test_serve_without_an_index_exits_4(
 
 
 @SERVERS
+def test_serve_on_a_corrupt_index_says_so_once_and_exits_1(
+    flags: list[str],
+    mini_cli,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    segment = tmp_path / "idx" / "segment.sft"
+    segment.write_bytes(b"NOPE" + segment.read_bytes()[4:])
+    assert run_main("serve", *flags, "--port", "0") == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ")
+    assert "bad magic" in err
+    assert err.count("\n") == 1  # no traceback from uvicorn
+
+
+@SERVERS
 def test_serve_on_a_busy_port_exits_1(
     flags: list[str], mini_cli, capsys: pytest.CaptureFixture[str]
 ) -> None:
