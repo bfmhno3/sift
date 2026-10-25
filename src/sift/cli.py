@@ -670,36 +670,54 @@ def run_gui(
         bool,
         typer.Option(
             "--tk",
-            help="Use the tkinter window (the only one until chapter 21).",
+            help="Use the tkinter window of chapter 20, not the Qt one.",
         ),
     ] = False,
 ) -> None:
     """Open the search window on the index and run it until it closes.
 
+    The window is the PySide6 one, or the tkinter one with ``--tk``.
     Raise IndexMissingError (exit 4) if there is no index and
-    SiftError (exit 1) if there is no display, the Python has no
-    tkinter or the gui extra is not installed. ``--tk`` is the
-    default and the only toolkit for now.
+    SiftError (exit 1) if there is no display, the toolkit is not
+    installed or the gui extra is not. The toolkits are imported
+    here, after the checks, so no other command loads Qt or tkinter.
     """
     from sift.config import load_config
 
     config = load_config()
     directory = index_dir(config)
     require_index(directory)
-    try:
-        from sift.gui.controller import IndexBackend
-        from sift.gui.tk_app import run
-    except ModuleNotFoundError as error:
-        if error.name in ("tkinter", "_tkinter"):
-            raise SiftError(
-                "sift gui needs tkinter, and this Python was built without it"
-            ) from None
-        raise SiftError(
-            f"sift gui needs the gui extra ({error.name} is missing): "
-            "pip install 'sift[gui]'"
-        ) from None
+    from sift.gui.controller import IndexBackend
+    from sift.storage.store import DB
+
     with searching(directory, config) as searcher:
-        run(IndexBackend(searcher, config.limit))
+        if tk:
+            try:
+                from sift.gui.tk_app import run as run_tk
+            except ModuleNotFoundError as error:
+                raise gui_import_error(error) from None
+            run_tk(IndexBackend(searcher, config.limit))
+            return
+        try:
+            from sift.gui.qt.app import run as run_qt
+        except ModuleNotFoundError as error:
+            raise gui_import_error(error) from None
+        backend = IndexBackend(searcher, config.limit, log_path=directory / DB)
+        code = run_qt([sys.argv[0]], backend)
+        if code:
+            raise SiftError(f"the window ended with exit code {code}")
+
+
+def gui_import_error(error: ModuleNotFoundError) -> SiftError:
+    """Return the SiftError for a toolkit that cannot be imported."""
+    if error.name in ("tkinter", "_tkinter"):
+        return SiftError(
+            "sift gui needs tkinter, and this Python was built without it"
+        )
+    return SiftError(
+        f"sift gui needs the gui extra ({error.name} is missing): "
+        "pip install 'sift[gui]'"
+    )
 
 
 def print_flushed(text: str) -> None:

@@ -3,6 +3,12 @@
 import os
 from pathlib import Path
 
+# The Qt tests (and the doctests of sift.gui.qt) must never open a
+# window: set the platform before anything imports PySide6. It is set,
+# not defaulted: a desktop session exports "wayland" or "xcb" and
+# setdefault would keep it.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import pytest
 
 from sift.corpus import iter_documents

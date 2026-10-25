@@ -26,6 +26,8 @@ web = [
 gui = [
   "sv-ttk>=2.6",
   "darkdetect>=0.8",
+  "PySide6>=6.11",
+  "qtawesome>=1.4",
 ]
 
 [project.scripts]
@@ -45,7 +47,7 @@ markers = [
 strict = true
 python_version = "3.14"
 files = ["src"]
-mypy_path = "src"
+mypy_path = "src:typings"
 
 # darkdetect ships neither stubs nor py.typed; sift.gui.tk_app wraps
 # its one call in a typed function.
@@ -53,8 +55,14 @@ mypy_path = "src"
 module = ["darkdetect"]
 ignore_missing_imports = true
 
+# PySide6 ships .pyi files but no py.typed marker.
+[[tool.mypy.overrides]]
+module = ["PySide6", "PySide6.*"]
+follow_untyped_imports = true
+
 [tool.pyright]
 typeCheckingMode = "strict"
 include = ["src"]
+stubPath = "typings"
 pythonVersion = "3.14"
 reportMissingTypeStubs = false

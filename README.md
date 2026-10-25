@@ -49,7 +49,9 @@ src/sift/            the package (parallel.py: process, thread and interpreter p
                      client.py: httpx clients, sync and async;
                      cli.py: the typer command line; render.py: rich tables, progress, tracebacks;
                      gui/controller.py: the search logic of a window, no toolkit;
-                     gui/tk_app.py: the tkinter window, `sift gui`)
+                     gui/tk_app.py: the tkinter window, `sift gui --tk`;
+                     gui/qt/: the PySide6 window, `sift gui`: theme.py tokens and QSS,
+                     model.py, delegate.py, worker.py, preview.py, window.py, app.py)
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -95,8 +97,9 @@ sift serve --port 8000         # FastAPI on uvicorn (needs the web extra): /sear
                                # carry document paths as indexed (absolute ones leak)
 sift serve --raw --port 8000   # the same routes on the hand-written asyncio server
 python3 lab/ch17/load.py --port 8000 --clients 100 --requests 20
-sift gui --tk                  # the tkinter window (needs the gui extra and a display);
+sift gui                       # the PySide6 window (needs the gui extra and a display);
                                # no index: exit 4, no display or no extra: exit 1
+sift gui --tk                  # the tkinter window of chapter 20
 ```
 
 ## Dependencies
@@ -112,11 +115,15 @@ usage errors are drawn with boxes only when both stdout and stderr are terminals
 `sift.client` and the tests of the FastAPI server need them. The Nix dev shell provides them. The core (`sift index`,
 `sift search`, `sift serve --raw`) needs only SQLAlchemy.
 
-`pip install 'sift[gui]'` adds `sv-ttk` and `darkdetect`: the theme and the light/dark detection of `sift gui`. tkinter
-itself comes with the Python (the Nix dev shell has it). The window draws Latin text with Inter and falls back to a CJK
+`pip install 'sift[gui]'` adds `PySide6` and `qtawesome` (the Qt window of `sift gui`: Fusion style, one QSS string built
+from design tokens, `mdi6` icons, light or dark as the system says, `Ctrl+K` to search, `Ctrl+O` to open the post) and
+`sv-ttk` and `darkdetect` (the theme and the light/dark detection of `sift gui --tk`). tkinter itself comes with the
+Python (the Nix dev shell has it). `PySide6` is imported only by `sift gui`, so no other command loads Qt. The window draws Latin text with Inter and falls back to a CJK
 font through fontconfig; the dev shell's `FONTCONFIG_FILE` names Noto Sans CJK SC as that fallback. The window tests
 (`tests/tk_display`) need a display, so `tests/test_tk_window.py` runs them under `xvfb-run`; `make ch20` saves the
-screenshots `out/figures/ch20-tk-light.png` and `ch20-tk-dark.png`.
+screenshots `out/figures/ch20-tk-light.png` and `ch20-tk-dark.png`. The Qt tests (`tests/test_qt_gui.py`) run on Qt's
+`offscreen` platform, which `make` forces and `tests/conftest.py` defaults to; `make ch21` saves four screenshots
+`out/figures/ch21-qt-{light,dark,empty,error}.webp`.
 
 ## Corpus license
 

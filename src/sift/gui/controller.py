@@ -25,10 +25,12 @@ import queue
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
+from sift.document import Document
 from sift.errors import QuerySyntaxError, SiftError
-from sift.search import Searcher
+from sift.search import Searcher, SearchResult
 from sift.snippet import highlight
 
 log = logging.getLogger(__name__)
@@ -104,20 +106,98 @@ class Backend(Protocol):
         ...
 
 
+class Catalog(Protocol):
+    """What the Qt window asks of an index.
+
+    ``find`` runs on a worker thread of the pool; ``terms`` and
+    ``document`` run on the UI thread, once per answer and once per
+    selected row. Any of them may raise SiftError.
+    """
+
+    @property
+    def n_docs(self) -> int:
+        """Return how many documents the index holds."""
+        ...
+
+    @property
+    def logs_queries(self) -> bool:
+        """Return True if ``find`` writes the query log."""
+        ...
+
+    def find(self, query: str) -> SearchResult:
+        """Search; raise QuerySyntaxError for a bad query."""
+        ...
+
+    def terms(self, query: str) -> set[str]:
+        """Return the analyzed positive words of a good query."""
+        ...
+
+    def document(self, doc_id: int) -> Document:
+        """Return the document with this id."""
+        ...
+
+
 class IndexBackend:
     """Search an open index with a Searcher, one query at a time.
 
     A Searcher is not thread-safe (its LRU cache), and a second query
     can start while the first still runs, so a lock serialises them.
-    The previews are built here, on the worker thread, so that
-    selecting a row costs nothing on the UI thread.
+    The Tk window gets whole ``Outcome`` objects from ``search``,
+    previews included, built on the worker thread, so that selecting
+    a row costs nothing on the UI thread. The Qt window is a
+    ``Catalog``: ``find``, ``terms`` and ``document`` are the same
+    steps one by one.
     """
 
-    def __init__(self, searcher: Searcher, limit: int = 10) -> None:
-        """Keep the searcher and the most rows to show."""
+    def __init__(
+        self,
+        searcher: Searcher,
+        limit: int = 10,
+        *,
+        log_path: Path | None = None,
+    ) -> None:
+        """Keep the searcher and the most rows to show.
+
+        If log_path is given, ``find`` appends every answered query
+        to the query log in that database, as ``sift search`` does.
+        """
         self.searcher = searcher
         self.limit = limit
+        self.log_path = log_path
         self._lock = threading.Lock()
+
+    @property
+    def n_docs(self) -> int:
+        """Return how many documents the index holds."""
+        return self.searcher.index.n_docs
+
+    @property
+    def logs_queries(self) -> bool:
+        """Return True if ``find`` writes the query log."""
+        return self.log_path is not None
+
+    def find(self, query: str) -> SearchResult:
+        """Search under the lock and log the answered query."""
+        with self._lock:
+            result = self.searcher.search(query, self.limit)
+        if self.log_path is not None:
+            from sift.storage.db import log_query
+
+            try:
+                log_query(self.log_path, query, result.total, result.took_ms)
+            except SiftError:
+                log.warning("query not logged in %s", self.log_path)
+        return result
+
+    def terms(self, query: str) -> set[str]:
+        """Return the analyzed positive words of query."""
+        with self._lock:
+            return self.searcher.highlight_terms(query)
+
+    def document(self, doc_id: int) -> Document:
+        """Return the document with this id."""
+        with self._lock:
+            return self.searcher.index.documents[doc_id]
 
     def search(self, query: str) -> Outcome:
         """Search, then build the rows and the previews of the hits."""

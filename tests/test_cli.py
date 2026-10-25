@@ -987,10 +987,33 @@ def test_gui_without_the_extra_exits_1(
 ) -> None:
     monkeypatch.delitem(sys.modules, "sift.gui.tk_app", raising=False)
     monkeypatch.setitem(sys.modules, missing, None)
-    result = invoke("gui")
+    result = invoke("gui", "--tk")
     assert result.exit_code == 1
     assert f"the gui extra ({missing} is missing)" in result.stderr
     assert "pip install 'sift[gui]'" in result.stderr
+
+
+def test_gui_without_pyside6_exits_1(
+    monkeypatch: pytest.MonkeyPatch, mini_cli
+) -> None:
+    monkeypatch.delitem(sys.modules, "sift.gui.qt.app", raising=False)
+    monkeypatch.setitem(sys.modules, "PySide6", None)
+    monkeypatch.setitem(sys.modules, "PySide6.QtCore", None)
+    result = invoke("gui")
+    assert result.exit_code == 1
+    assert "the gui extra (PySide6" in result.stderr
+    assert "pip install 'sift[gui]'" in result.stderr
+
+
+def test_gui_qt_without_a_display_exits_1(
+    monkeypatch: pytest.MonkeyPatch, mini_cli
+) -> None:
+    pytest.importorskip("PySide6")
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM"):
+        monkeypatch.delenv(name, raising=False)
+    result = invoke("gui")
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: cannot open a display")
 
 
 def test_gui_without_tkinter_exits_1(
@@ -998,7 +1021,7 @@ def test_gui_without_tkinter_exits_1(
 ) -> None:
     monkeypatch.delitem(sys.modules, "sift.gui.tk_app", raising=False)
     monkeypatch.setitem(sys.modules, "tkinter", None)
-    result = invoke("gui")
+    result = invoke("gui", "--tk")
     assert result.exit_code == 1
     assert "needs tkinter" in result.stderr
 
@@ -1006,7 +1029,8 @@ def test_gui_without_tkinter_exits_1(
 def test_version_does_not_import_the_gui() -> None:
     code = (
         "import sys, sift.cli as c; c.main(['--version']); "
-        "bad = [m for m in ('tkinter', 'sv_ttk', 'darkdetect') "
+        "bad = [m for m in ('tkinter', 'sv_ttk', 'darkdetect', "
+        "'PySide6', 'qtawesome') "
         "if m in sys.modules]; assert not bad, bad"
     )
     done = subprocess.run(
