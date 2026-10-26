@@ -2,8 +2,8 @@
 
 import re
 import unicodedata
-from collections.abc import Iterator
-from typing import NamedTuple
+from collections.abc import Callable, Iterator
+from typing import NamedTuple, cast
 
 CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 
@@ -35,6 +35,13 @@ class Token(NamedTuple):
     end: int
 
 
+# Token(...) runs a generated Python __new__; this skips that frame.
+_new_token = cast(
+    "Callable[[type[Token], tuple[str, int, int, int]], Token]",
+    tuple[object, ...].__new__,
+)
+
+
 def iter_tokens(text: str) -> Iterator[Token]:
     """Yield the tokens of text one at a time.
 
@@ -50,19 +57,17 @@ def iter_tokens(text: str) -> Iterator[Token]:
     """
     folded = fold(text)
     position = 0
+    new = _new_token
     for match in _TOKEN.finditer(folded):
-        if match["latin"] is not None:
-            yield Token(match["latin"], position, match.start(), match.end())
+        run = match[0]
+        start, end = match.span()
+        if match.lastgroup == "latin" or end - start == 1:
+            yield new(Token, (run, position, start, end))
             position += 1
             continue
-        run = match["cjk"]
-        if len(run) == 1:
-            yield Token(run, position, match.start(), match.end())
-            position += 1
-            continue
-        for i in range(len(run) - 1):
-            start = match.start() + i
-            yield Token(run[i : i + 2], position, start, start + 2)
+        for i in range(end - start - 1):
+            at = start + i
+            yield new(Token, (run[i : i + 2], position, at, at + 2))
             position += 1
 
 
