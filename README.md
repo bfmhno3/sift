@@ -52,8 +52,10 @@ src/sift/            the package (parallel.py: process, thread and interpreter p
                      gui/tk_app.py: the tkinter window, `sift gui --tk`;
                      gui/qt/: the PySide6 window, `sift gui`: theme.py tokens and QSS,
                      model.py, delegate.py, worker.py, preview.py, window.py, app.py;
+                     ext/: the native tokenizers: ctok.py (ctypes), cffitok.py (cffi), _cytok.pyx (Cython), _capi (C API);
                      analytics/: TF-IDF vectors and `sift similar` (vectors.py), pandas frames and
                      Zipf/Heaps fits (stats.py), matplotlib figures (plots.py), `sift report` (report.py))
+c/                   sift_tok.c (the tokenizer in C), sift_capi.c (a C API module), Makefile for the native artifacts
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -81,11 +83,13 @@ nix develop
 make corpus    # fetch the 123 posts into corpus/ (pinned commit)
 make ch01      # one chapter
 make typecheck # mypy --strict and pyright strict on src/
+make ext       # build c/build/libsifttok.so and the _capi and _cytok modules in src/sift/ext/
 make test      # the pytest suite (python3 -m pytest) (make cov adds coverage)
-make ci        # lint, typecheck, tests and every chapter
+make ci        # lint, typecheck, ext, tests and every chapter
 sift index     # writes .sift/ (segment.sft, sift.db, manifest.json)
 sift search --limit 3 rust
 sift index --full --jobs 4 --mode thread   # modes: process, thread, interp
+sift index --full --tokenizer cython       # python, c (ctypes), cffi or cython; needs make ext
 sift bench index --repeat 8 --jobs 1,2,4,8 --mode process,thread,interp
 PYTHONPATH=src:<pure-Python site-packages> python3.14t -m sift bench index --mode thread
                                # free-threaded: typer and rich are not installed for it,
@@ -143,6 +147,15 @@ cProfile and writes `out/profile.pstats`. `make ch23` profiles `sift index --ful
 py-spy (`out/figures/ch23-flame.svg`; if ptrace is denied the error is saved and the step skipped), memray and
 tracemalloc; `kernprof` is used when present. It also times tag `ch22` against this tree with hyperfine, in a
 temporary worktree, and compares the two `segment.sft` files with `cmp`.
+
+`make ext` compiles `c/sift_tok.c` into `c/build/libsifttok.so` (ctypes and cffi load it), `c/sift_capi.c` into
+`src/sift/ext/_capi*.so` and `src/sift/ext/_cytok.pyx` into `_cytok*.so`, all with gcc from the dev shell; `make clean`
+removes them, and `make ci` runs it before the tests. `sift index --tokenizer c|cffi|cython` swaps the scanning loop
+of the mixed tokenizer for its native twin (NFKC and casefold stay in Python); the segment file is byte for byte the one
+of `--tokenizer python`, only the pipeline name in `sift.db` differs, so changing the tokenizer rebuilds the index.
+`tests/test_ext.py` compares the token streams with the Python tokenizer on the fixtures, on the corpus (when present)
+and on random text, and skips when `make ext` has not run. `make ch24` also runs the C code under AddressSanitizer
+and UBSan, counts the yellow lines of the `cython -a` report and compares the segment files with `cmp`.
 
 ## Corpus license
 
