@@ -48,12 +48,14 @@ py_spy() {
         return 0
     fi
     py-spy --version
-    echo '$ py-spy record --duration 15 -o out/figures/ch23-flame.svg -- python3 -m sift index --full'
+    echo '$ py-spy record --rate 20 -o out/figures/ch23-flame.svg -- python3 -m sift index --full'
     local status=0
     rm -f out/figures/ch23-flame.svg
-    # --duration ends the recording when py-spy does not see the child
-    # exit (it never does under make); the run takes about 3 s.
-    timeout 60 py-spy record --duration 15 -o out/figures/ch23-flame.svg -- \
+    # Under make, py-spy 0.4.2 samples this sandbox slowly and at 50
+    # Hz or more it falls behind and never sees the child exit; 20 Hz
+    # finishes with a complete graph. --duration and timeout are the
+    # safety nets.
+    timeout 60 py-spy record --rate 20 --duration 30 -o out/figures/ch23-flame.svg -- \
         python3 -m sift index --full 2> "$work/py-spy.err" || status=$?
     if [[ -s out/figures/ch23-flame.svg ]]; then
         tail -n 3 "$work/py-spy.err"
