@@ -1,9 +1,12 @@
 """Tests for sift.snippet."""
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from sift.analysis.tokenize import fold
 from sift.snippet import (
+    _origin,
     highlight,
     html,
     make_snippet,
@@ -109,6 +112,26 @@ def test_equal_length_does_not_mean_equal_offsets() -> None:
     parts = make_snippet(text, {"fi"})
     assert [t for t, hit in parts if hit] == ["fi"]
     assert render_plain(parts) == "á[fi]"
+
+
+def origin_per_character(text: str) -> tuple[str, list[int] | None]:
+    """Return what _origin returns, the long way: one fold per char."""
+    if text.isascii():
+        return text, None
+    folded = fold(text)
+    table = [0]
+    for ch in text:
+        table.append(table[-1] + len(fold(ch)))
+    if table[-1] != len(folded):
+        return folded, None
+    if len(table) - 1 == table[-1]:
+        return text, None
+    return text, table
+
+
+@given(st.text(alphabet="aAbß\u0301\ufb01\u2026\u33cf\u4e2d\uff21 "))
+def test_origin_matches_the_per_character_fold(text: str) -> None:
+    assert _origin(text) == origin_per_character(text)
 
 
 def test_sharp_s_with_accent_is_tokenized_once() -> None:

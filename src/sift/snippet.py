@@ -42,12 +42,12 @@ def _origin(text: str) -> tuple[str, list[int] | None]:
     if text.isascii():
         return text, None
     folded = fold(text)
-    lengths = [_folded_len(ch) for ch in text]
-    table = list(accumulate(lengths, initial=0))
+    sizes = {ch: _folded_len(ch) for ch in set(text)}
+    if all(size == 1 for size in sizes.values()):
+        return (text if len(folded) == len(text) else folded), None
+    table = list(accumulate(map(sizes.__getitem__, text), initial=0))
     if table[-1] != len(folded):
         return folded, None
-    if all(length == 1 for length in lengths):
-        return text, None
     return text, table
 
 
