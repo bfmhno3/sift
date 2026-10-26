@@ -23,7 +23,9 @@ window (``sift.gui.tk_app``, tkinter, the ``gui`` extra).
 writes figures and a table about the corpus (``sift.analytics``, numpy,
 pandas and matplotlib, the ``data`` extra). ``sift bench search`` logs
 its queries like ``sift search`` does; with ``--profile`` it writes
-``out/profile.pstats``.
+``out/profile.pstats``. ``sift index --tokenizer c|cffi|cython`` scans
+with the native twin of the mixed tokenizer (``sift.ext``, built by
+``make ext``); the segment file is the same as with ``python``.
 
 Output goes through rich (``sift.render``) only on a terminal; in a
 pipe, with ``--json`` or with NO_COLOR set it is plain text: the
@@ -76,6 +78,13 @@ QUERIES = Path("bench/queries.txt")
 PROFILE = Path("out/profile.pstats")
 DEBUG_KEY = "sift.debug"
 MODE_NAMES = "process, thread or interp"
+# --tokenizer name -> name of the analyzer in the pipeline.
+TOKENIZERS = {
+    "python": "mixed",
+    "c": "mixed-c",
+    "cffi": "mixed-cffi",
+    "cython": "mixed-cython",
+}
 
 
 class SiftGroup(TyperGroup):
@@ -299,6 +308,31 @@ def modes_arg(text: str) -> list[Mode]:
     return list(dict.fromkeys(mode_arg(part) for part in text.split(",")))
 
 
+def tokenizer_arg(text: str) -> str:
+    """Convert text to the name of one tokenizer, for ``--tokenizer``."""
+    if text not in TOKENIZERS:
+        raise typer.BadParameter(
+            f"unknown tokenizer {text!r}, use one of {', '.join(TOKENIZERS)}",
+            param_hint="'--tokenizer'",
+        )
+    return text
+
+
+def with_tokenizer(names: Sequence[str], tokenizer: str) -> tuple[str, ...]:
+    """Return the pipeline names with the tokenizer of --tokenizer.
+
+    Only the mixed tokenizer and its native twins swap places; any
+    other first stage raises ConfigError.
+    """
+    first, *rest = names
+    if first not in TOKENIZERS.values():
+        raise ConfigError(
+            f"--tokenizer {tokenizer} needs the mixed tokenizer, "
+            f"the pipeline starts with {first!r}"
+        )
+    return (TOKENIZERS[tokenizer], *rest)
+
+
 def port_arg(text: str) -> int:
     """Convert text to a TCP port, 0 to 65535."""
     number = int_arg(text)
@@ -370,6 +404,17 @@ def run_index(
             help=f"Kind of worker when --jobs > 1: {MODE_NAMES}.",
         ),
     ] = "process",
+    tokenizer: Annotated[
+        str | None,
+        typer.Option(
+            parser=tokenizer_arg,
+            metavar="NAME",
+            help="Implementation of the mixed tokenizer: "
+            f"{', '.join(TOKENIZERS)}. The native ones need 'make ext'; "
+            "the index is the same, but its pipeline names the "
+            "tokenizer, so changing it rebuilds.",
+        ),
+    ] = None,
 ) -> None:
     """Build or update the index directory and print what changed."""
     from sift.config import load_config
@@ -377,12 +422,15 @@ def run_index(
 
     worker = mode_arg(mode)
     config = load_config()
+    pipeline = config.pipeline
+    if tokenizer is not None:
+        pipeline = with_tokenizer(pipeline, tokenizer)
     start = time.perf_counter()
     with render.index_progress() as progress:
         report = update_index(
             corpus or config.corpus,
             index_dir(config),
-            config.pipeline,
+            pipeline,
             full=full,
             jobs=jobs,
             mode=worker,

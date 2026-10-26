@@ -1129,3 +1129,47 @@ def test_version_does_not_import_the_gui() -> None:
         [sys.executable, "-c", code], capture_output=True, text=True
     )
     assert done.returncode == 0, done.stderr
+
+
+NATIVE_MODULES = {
+    "c": "sift.ext.ctok",
+    "cffi": "sift.ext.cffitok",
+    "cython": "sift.ext._cytok",
+}
+
+
+@pytest.mark.parametrize("tokenizer", NATIVE_MODULES)
+def test_index_tokenizer_gives_the_same_segment(
+    mini_cli, tmp_path: Path, tokenizer: str, native
+) -> None:
+    native(NATIVE_MODULES[tokenizer])
+    python = (tmp_path / "idx" / "segment.sft").read_bytes()
+    ok("index", "--full", "--tokenizer", tokenizer)
+    assert (tmp_path / "idx" / "segment.sft").read_bytes() == python
+    ok("search", "chain")
+
+
+def test_index_tokenizer_python_is_the_default(
+    mini_cli, tmp_path: Path
+) -> None:
+    before = (tmp_path / "idx" / "segment.sft").read_bytes()
+    out = ok("index", "--tokenizer", "python").stdout
+    assert "incremental: parsed 0" in out
+    assert (tmp_path / "idx" / "segment.sft").read_bytes() == before
+
+
+def test_index_tokenizer_unknown_is_a_usage_error() -> None:
+    assert code_of("index", "--tokenizer", "rust") == 2
+
+
+def test_index_tokenizer_needs_the_mixed_tokenizer(
+    mini_cli, tmp_path: Path
+) -> None:
+    config = tmp_path / "sift.toml"
+    config.write_text(
+        config.read_text("utf-8") + '\n[analysis]\npipeline = ["latin"]\n',
+        encoding="utf-8",
+    )
+    result = invoke("index", "--tokenizer", "c")
+    assert result.exit_code == 1
+    assert "needs the mixed tokenizer" in result.output
