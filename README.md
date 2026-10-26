@@ -137,6 +137,13 @@ the font file named by `SIFT_CJK_FONT` (the dev shell sets it to Noto Sans CJK).
 in `sift.db`, so `sift report` has latencies to draw; `make ch22` saves `out/figures/ch22-{zipf,heaps,posts-per-month,
 latency-hist}.png`.
 
+`tests/test_search_stable.py` pins the top 10 of every query in `bench/queries.txt` over the full corpus (it skips
+without `corpus/`), so a speed-up that moves a result fails. `sift bench search --profile` runs the queries under
+cProfile and writes `out/profile.pstats`. `make ch23` profiles `sift index --full` with cProfile, pyinstrument and
+py-spy (`out/figures/ch23-flame.svg`; if ptrace is denied the error is saved and the step skipped), memray and
+tracemalloc; `kernprof` is used when present. It also times tag `ch22` against this tree with hyperfine, in a
+temporary worktree, and compares the two `segment.sft` files with `cmp`.
+
 ## Corpus license
 
 The posts are licensed CC BY-NC-SA 4.0, so they are fetched from the blog repository at a pinned commit and never

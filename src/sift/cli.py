@@ -22,7 +22,8 @@ window (``sift.gui.tk_app``, tkinter, the ``gui`` extra).
 ``sift similar`` lists the posts closest to one post and ``sift report``
 writes figures and a table about the corpus (``sift.analytics``, numpy,
 pandas and matplotlib, the ``data`` extra). ``sift bench search`` logs
-its queries like ``sift search`` does.
+its queries like ``sift search`` does; with ``--profile`` it writes
+``out/profile.pstats``.
 
 Output goes through rich (``sift.render``) only on a terminal; in a
 pipe, with ``--json`` or with NO_COLOR set it is plain text: the
