@@ -23,9 +23,10 @@ window (``sift.gui.tk_app``, tkinter, the ``gui`` extra).
 writes figures and a table about the corpus (``sift.analytics``, numpy,
 pandas and matplotlib, the ``data`` extra). ``sift bench search`` logs
 its queries like ``sift search`` does; with ``--profile`` it writes
-``out/profile.pstats``. ``sift index --tokenizer c|cffi|cython`` scans
-with the native twin of the mixed tokenizer (``sift.ext``, built by
-``make ext``); the segment file is the same as with ``python``.
+``out/profile.pstats``. ``sift index --tokenizer c|cffi|cython|rust``
+scans with the native twin of the mixed tokenizer (``sift.ext``, built
+by ``make ext`` and ``make ext-rs``); the segment file is the same as
+with ``python``.
 
 Output goes through rich (``sift.render``) only on a terminal; in a
 pipe, with ``--json`` or with NO_COLOR set it is plain text: the
@@ -84,6 +85,7 @@ TOKENIZERS = {
     "c": "mixed-c",
     "cffi": "mixed-cffi",
     "cython": "mixed-cython",
+    "rust": "mixed-rust",
 }
 
 
@@ -410,7 +412,8 @@ def run_index(
             parser=tokenizer_arg,
             metavar="NAME",
             help="Implementation of the mixed tokenizer: "
-            f"{', '.join(TOKENIZERS)}. The native ones need 'make ext'; "
+            f"{', '.join(TOKENIZERS)}. The native ones need 'make ext' "
+            "('make ext-rs' for rust); "
             "the index is the same, but its pipeline names the "
             "tokenizer, so changing it rebuilds.",
         ),

@@ -1135,6 +1135,7 @@ NATIVE_MODULES = {
     "c": "sift.ext.ctok",
     "cffi": "sift.ext.cffitok",
     "cython": "sift.ext._cytok",
+    "rust": "sift.ext.rs",
 }
 
 
@@ -1159,7 +1160,7 @@ def test_index_tokenizer_python_is_the_default(
 
 
 def test_index_tokenizer_unknown_is_a_usage_error() -> None:
-    assert code_of("index", "--tokenizer", "rust") == 2
+    assert code_of("index", "--tokenizer", "go") == 2
 
 
 def test_index_tokenizer_needs_the_mixed_tokenizer(

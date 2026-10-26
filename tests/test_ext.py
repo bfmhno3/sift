@@ -1,6 +1,7 @@
 """Tests for sift.ext: the native tokenizers against the Python one.
 
-They need the artifacts of ``make ext`` and skip when one is missing.
+They need the artifacts of ``make ext`` and ``make ext-rs`` and skip
+when one is missing.
 """
 
 import ctypes
@@ -21,12 +22,23 @@ ROOT = Path(__file__).parent.parent
 CORPUS = ROOT / "corpus" / "posts"
 MINI = Path(__file__).parent / "fixtures" / "mini"
 
-TOKENIZER_MODULES = ["sift.ext.ctok", "sift.ext.cffitok", "sift.ext._cytok"]
-COUNTER_MODULES = [*TOKENIZER_MODULES, "sift.ext._capi"]
+TOKENIZER_MODULES = [
+    "sift.ext.ctok",
+    "sift.ext.cffitok",
+    "sift.ext._cytok",
+    "sift.ext.rs",
+]
+COUNTER_MODULES = [
+    "sift.ext.ctok",
+    "sift.ext.cffitok",
+    "sift.ext._cytok",
+    "sift.ext._capi",
+]
 ANALYZERS = {
     "sift.ext.ctok": "mixed-c",
     "sift.ext.cffitok": "mixed-cffi",
     "sift.ext._cytok": "mixed-cython",
+    "sift.ext.rs": "mixed-rust",
 }
 
 EDGE_TEXTS = [
@@ -241,3 +253,87 @@ def test_invalid_utf8_is_skipped(native: Loader) -> None:
         for s, e in zip(spans[::2], spans[1::2], strict=True)
     ]
     assert words == ["ab", "cd", "e", "中", "f", "g"]
+
+
+@pytest.fixture(scope="module")
+def rs(native: Loader) -> ModuleType:
+    """Return the Python wrapper of the Rust tokenizer."""
+    return native("sift.ext.rs")
+
+
+@pytest.mark.parametrize("threads", [0, 1, 2, 7])
+def test_rust_many_gives_the_python_tokens_in_order(
+    rs: ModuleType, threads: int
+) -> None:
+    texts = [
+        *EDGE_TEXTS[:-1],
+        *(p.read_text("utf-8") for p in sorted(MINI.glob("*.md"))),
+    ]
+    got = rs.tokens_many([fold(text) for text in texts], threads)
+    assert got == [python_tokens(text) for text in texts]
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not CORPUS.is_dir(), reason="run `make corpus` first")
+def test_rust_many_gives_the_python_tokens_of_the_corpus(
+    rs: ModuleType,
+) -> None:
+    texts = [p.read_text("utf-8") for p in sorted(CORPUS.glob("*.md"))]
+    got = rs.tokens_many([fold(text) for text in texts])
+    assert got == [python_tokens(text) for text in texts]
+
+
+@given(
+    texts=st.lists(
+        st.text(alphabet="ab_9+#中文 \n\u3400é😀\ud800", max_size=40),
+        max_size=12,
+    ),
+    threads=st.integers(0, 5),
+)
+def test_rust_many_is_many_times_one(
+    texts: list[str], threads: int, native: Loader
+) -> None:
+    rs = native("sift.ext.rs")
+    folded = [fold(text) for text in texts]
+    assert rs.tokens_many(folded, threads) == [rs.tokens(t) for t in folded]
+
+
+def test_rust_many_of_nothing_is_empty(rs: ModuleType) -> None:
+    assert rs.tokens_many([]) == []
+    assert rs.tokens_many([""]) == [[]]
+
+
+def test_rust_too_many_threads_is_a_value_error(rs: ModuleType) -> None:
+    with pytest.raises(ValueError, match="between 0 and 256, got 257"):
+        rs.tokens_many(["a"], 257)
+    assert rs.tokens_many(["a"], 256) == [[Token("a", 0, 0, 1)]]
+
+
+def test_rust_raw_functions_refuse_surrogates(native: Loader) -> None:
+    raw = native("sift._rs")
+    with pytest.raises(UnicodeEncodeError):
+        raw.tokenize("a\ud800b")
+    with pytest.raises(UnicodeEncodeError):
+        raw.tokenize_many(["a", "b\udfff"])
+    assert raw.tokenize("a中文") == [("a", 0, 0, 1), ("中文", 1, 1, 3)]
+
+
+def test_rust_wrong_types_are_type_errors(native: Loader) -> None:
+    raw = native("sift._rs")
+    for bad in (b"abc", 3, None):
+        with pytest.raises(TypeError):
+            raw.tokenize(bad)
+    with pytest.raises(TypeError):
+        raw.tokenize_many("abc")
+    with pytest.raises(OverflowError):
+        raw.tokenize_many(["a"], -1)
+
+
+def test_rust_panic_is_a_base_exception(native: Loader) -> None:
+    raw = native("sift._rs")
+    if not hasattr(raw, "panic_for_lab"):
+        pytest.skip("panic_for_lab exists in debug builds only")
+    with pytest.raises(BaseException, match="boom") as info:
+        raw.panic_for_lab("boom")
+    assert type(info.value).__name__ == "PanicException"
+    assert not isinstance(info.value, Exception)

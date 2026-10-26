@@ -1,7 +1,8 @@
 """The tokenizers: Latin only, CJK bigrams only, and both.
 
 MixedTokenizer has three twins whose scanning loop is native code
-(sift.ext): the same tokens, from C by ctypes or cffi and from Cython.
+(sift.ext): the same tokens, from C by ctypes or cffi, from Cython and
+from Rust.
 """
 
 import re
@@ -92,3 +93,16 @@ class CythonMixedTokenizer(Analyzer, name="mixed-cython"):
         from sift.ext import _cytok
 
         return iter(_cytok.tokens(fold(text)))
+
+
+class RustMixedTokenizer(Analyzer, name="mixed-rust"):
+    """MixedTokenizer with the scan done in Rust, called through PyO3.
+
+    Needs ``make ext-rs``.
+    """
+
+    def analyze(self, text: str) -> Iterator[Token]:
+        """Yield the tokens of iter_tokens(text)."""
+        from sift.ext import rs
+
+        return iter(rs.tokens(fold(text)))

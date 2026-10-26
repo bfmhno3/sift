@@ -20,6 +20,8 @@ from sift.index import IndexWriter, InvertedIndex
 from sift.search import Searcher
 
 MINI = Path(__file__).parent / "fixtures" / "mini"
+# The PyO3 module that sift.ext.rs imports: make ext-rs builds it.
+RUST_MODULE = "sift._rs"
 
 
 @pytest.fixture(scope="session")
@@ -59,19 +61,20 @@ def native() -> Callable[[str], ModuleType]:
     """Return a loader for the modules of sift.ext.
 
     The loader skips the test when the module is not built, that is
-    when `make ext` has not run. Any other import error is a failure.
+    when `make ext` or `make ext-rs` has not run. Any other import
+    error is a failure.
     """
 
     def load(name: str) -> ModuleType:
         try:
             return importlib.import_module(name)
         except ModuleNotFoundError as error:
-            if error.name != name:
+            if error.name not in (name, RUST_MODULE):
                 raise
         except OSError as error:
             if "No such file" not in str(error):
                 raise
-        pytest.skip(f"{name} is not built: run `make ext`")
+        pytest.skip(f"{name} is not built: run `make ext` and `make ext-rs`")
 
     return load
 

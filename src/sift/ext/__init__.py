@@ -1,11 +1,12 @@
-"""Native tokenizers: the same tokens as MixedTokenizer, from C.
+"""Native tokenizers: the same tokens as MixedTokenizer, from C and Rust.
 
-Four ways to call native code, one task. ``ctok`` binds
+Five ways to call native code, one task. ``ctok`` binds
 ``c/build/libsifttok.so`` with ctypes, ``cffitok`` binds the same
 library with cffi, ``_cytok`` is a Cython module that loops over the
 str, and ``_capi`` is a hand-written C API module. ``make ext`` builds
 the three native artifacts; nothing here is imported until a tokenizer
-of this package is used.
+of this package is used. ``rs`` wraps the PyO3 module ``sift._rs``
+built from rust/sift-rs by ``make ext-rs``.
 
 Each tokenizer module has ``tokens(folded)``, which takes text that
 ``sift.analysis.tokenize.fold`` has already normalized and returns the
@@ -22,7 +23,7 @@ from typing import cast
 from sift.analysis.tokenize import Token
 
 # Token(...) runs a generated Python __new__; this skips that frame.
-_new_token = cast(
+new_token = cast(
     "Callable[[type[Token], tuple[str, int, int, int]], Token]",
     tuple[object, ...].__new__,
 )
@@ -56,7 +57,7 @@ def tokens_from_spans(
     token is either ASCII or CJK, and a CJK character takes three
     bytes, which gives its length in characters without decoding it.
     """
-    new = _new_token
+    new = new_token
     out: list[Token] = []
     it = iter(flat)
     if len(data) == len(folded):
