@@ -19,6 +19,10 @@ index over HTTP with FastAPI on uvicorn (``sift.server.app``, the
 ``web`` extra); ``sift serve --raw`` uses the hand-written asyncio
 server of ``sift.server.raw`` instead. ``sift gui`` opens the search
 window (``sift.gui.tk_app``, tkinter, the ``gui`` extra).
+``sift similar`` lists the posts closest to one post and ``sift report``
+writes figures and a table about the corpus (``sift.analytics``, numpy,
+pandas and matplotlib, the ``data`` extra). ``sift bench search`` logs
+its queries like ``sift search`` does.
 
 Output goes through rich (``sift.render``) only on a terminal; in a
 pipe, with ``--json`` or with NO_COLOR set it is plain text: the
@@ -28,10 +32,10 @@ the usage errors are click's plain text, without boxes.
 ``--debug`` logs at DEBUG level and prints uncaught exceptions, and
 the errors below, as rich tracebacks.
 
-The storage modules (and with them SQLAlchemy), asyncio and rich are
-imported by the commands that use them, so ``sift --version`` and
-``sift bench index`` start without that cost and run on an
-interpreter that lacks SQLAlchemy.
+The storage modules (and with them SQLAlchemy), asyncio, rich, numpy,
+pandas and matplotlib are imported by the commands that use them, so
+``sift --version`` and ``sift bench index`` start without that cost and
+run on an interpreter that lacks SQLAlchemy.
 """
 
 import os
@@ -416,6 +420,20 @@ def read_query(words: list[str]) -> str:
     return " ".join(words)
 
 
+def log_or_warn(db: Path, text: str, total: int, took_ms: float) -> None:
+    """Log one query in db; on a write error print a warning only."""
+    from sift.storage.db import log_query
+
+    try:
+        log_query(db, text, total, took_ms)
+    except SiftError:
+        # the error text can hold the query: say only where
+        print(
+            f"sift: warning: query not logged, cannot write {db}",
+            file=sys.stderr,
+        )
+
+
 @app.command("search", help="Search the index.")
 def run_search(
     query: Annotated[
@@ -450,7 +468,6 @@ def run_search(
     from sift.query import parse
     from sift.search import Searcher
     from sift.snippet import render_plain
-    from sift.storage.db import log_query
     from sift.storage.store import DB, open_index
 
     config = load_config()
@@ -470,15 +487,7 @@ def run_search(
         result = searcher.search(text, limit or config.limit)
         n_docs = index.n_docs
     if not no_log:
-        try:
-            log_query(directory / DB, text, result.total, result.took_ms)
-        except SiftError:
-            # the error text can hold the query: say only where
-            print(
-                f"sift: warning: query not logged, cannot write "
-                f"{directory / DB}",
-                file=sys.stderr,
-            )
+        log_or_warn(directory / DB, text, result.total, result.took_ms)
     if as_json:
         payload = {
             "query": result.query,
@@ -814,17 +823,22 @@ def run_bench_index(
 
 @bench_app.command("search", help="Run bench/queries.txt.")
 def run_bench_search() -> None:
-    """Run bench/queries.txt: open the index once, time each query."""
+    """Run bench/queries.txt: open the index once, time each query.
+
+    Every query is also logged in sift.db, after the timing, so a few
+    runs give the query log something to analyze.
+    """
     from sift.analysis import build_pipeline
     from sift.config import load_config
     from sift.search import Searcher
-    from sift.storage.store import open_index
+    from sift.storage.store import DB, open_index
 
     config = load_config()
     directory = index_dir(config)
     require_index(directory)
     queries = QUERIES.read_text(encoding="utf-8").splitlines()
     timings: list[tuple[str, int, float]] = []
+    logged: list[tuple[str, int, float]] = []
     with open_index(directory) as index:
         searcher = Searcher(
             index,
@@ -837,10 +851,79 @@ def run_bench_search() -> None:
             result = searcher.search(query, config.limit)
             elapsed = time.perf_counter() - start
             timings.append((query, result.total, elapsed))
+            logged.append((query, result.total, result.took_ms))
+    for query, hits, took_ms in logged:
+        log_or_warn(directory / DB, query, hits, took_ms)
     total = sum(seconds for _, _, seconds in timings)
     for query, hits, seconds in timings:
         print(f"{seconds * 1000:8.2f} ms  {hits:>4} hits  {query}")
     print(f"{total * 1000:8.2f} ms  total for {len(timings)} queries")
+
+
+def data_import_error(command: str, error: ModuleNotFoundError) -> SiftError:
+    """Return the SiftError for a command whose library is missing."""
+    return SiftError(
+        f"sift {command} needs the data extra ({error.name} is missing): "
+        "pip install 'sift[data]'"
+    )
+
+
+@app.command("similar", help="List the posts closest to one post.")
+def run_similar(
+    doc_id: DocId,
+    k: Annotated[
+        int,
+        typer.Option("-k", min=1, help="Number of posts to list."),
+    ] = 5,
+) -> None:
+    """Print the k posts whose TF-IDF vectors are closest to doc_id.
+
+    One line per post: the cosine score, the doc id and the title.
+    The post itself comes first, with score 1.0000. Raise
+    IndexMissingError (exit 4) without an index, SiftError (exit 1)
+    for an unknown doc id or a missing data extra.
+    """
+    from sift.config import load_config
+    from sift.storage.store import open_index
+
+    directory = index_dir(load_config())
+    require_index(directory)
+    try:
+        from sift.analytics.vectors import similar
+    except ModuleNotFoundError as error:
+        raise data_import_error("similar", error) from None
+    with open_index(directory) as index:
+        for other, score in similar(index, doc_id, k):
+            title = index.documents[other].title
+            print(f"{score:.4f}  {other:>4}  {title}")
+
+
+@app.command("report", help="Write figures and a table about the corpus.")
+def run_report(
+    out: Annotated[
+        Path,
+        typer.Option(
+            "--out", help="Directory for the PNG figures and report.md."
+        ),
+    ] = Path("out/report"),
+) -> None:
+    """Write the four figures and ``report.md`` into out; list them.
+
+    Raise IndexMissingError (exit 4) without an index and SiftError
+    (exit 1) if the data extra is missing.
+    """
+    from sift.config import load_config
+    from sift.storage.store import DB, open_index
+
+    directory = index_dir(load_config())
+    require_index(directory)
+    try:
+        from sift.analytics.report import write_report
+    except ModuleNotFoundError as error:
+        raise data_import_error("report", error) from None
+    with open_index(directory) as index:
+        for path in write_report(index, directory / DB, out):
+            print(path)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

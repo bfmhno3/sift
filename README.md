@@ -51,7 +51,9 @@ src/sift/            the package (parallel.py: process, thread and interpreter p
                      gui/controller.py: the search logic of a window, no toolkit;
                      gui/tk_app.py: the tkinter window, `sift gui --tk`;
                      gui/qt/: the PySide6 window, `sift gui`: theme.py tokens and QSS,
-                     model.py, delegate.py, worker.py, preview.py, window.py, app.py)
+                     model.py, delegate.py, worker.py, preview.py, window.py, app.py;
+                     analytics/: TF-IDF vectors and `sift similar` (vectors.py), pandas frames and
+                     Zipf/Heaps fits (stats.py), matplotlib figures (plots.py), `sift report` (report.py))
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -100,6 +102,10 @@ python3 lab/ch17/load.py --port 8000 --clients 100 --requests 20
 sift gui                       # the PySide6 window (needs the gui extra and a display);
                                # no index: exit 4, no display or no extra: exit 1
 sift gui --tk                  # the tkinter window of chapter 20
+sift similar 0 -k 5            # the 5 posts closest to post 0 by TF-IDF cosine, itself first
+                               # (needs the data extra)
+sift report --out out/report   # zipf.png, heaps.png, posts-per-month.png, latency-hist.png
+                               # and report.md (needs the data extra and SIFT_CJK_FONT)
 ```
 
 ## Dependencies
@@ -124,6 +130,12 @@ font through fontconfig; the dev shell's `FONTCONFIG_FILE` names Noto Sans CJK S
 screenshots `out/figures/ch20-tk-light.png` and `ch20-tk-dark.png`. The Qt tests (`tests/test_qt_gui.py`) run on Qt's
 `offscreen` platform, which `make` forces and `tests/conftest.py` defaults to; `make ch21` saves four screenshots
 `out/figures/ch21-qt-{light,dark,empty,error}.webp`.
+
+`pip install 'sift[data]'` adds `numpy`, `pandas` and `matplotlib`: `sift similar` and `sift report` (the package
+`sift.analytics`) need them, and no other command imports them. The figures use the `Agg` backend and draw Chinese with
+the font file named by `SIFT_CJK_FONT` (the dev shell sets it to Noto Sans CJK). `sift bench search` logs its queries
+in `sift.db`, so `sift report` has latencies to draw; `make ch22` saves `out/figures/ch22-{zipf,heaps,posts-per-month,
+latency-hist}.png`.
 
 ## Corpus license
 

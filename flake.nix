@@ -30,6 +30,7 @@
               sqlalchemy
               numpy
               pandas
+              pandas-stubs
               matplotlib
               typer
               rich

@@ -293,6 +293,67 @@ def test_bench_search_runs_every_query(
     assert "total for 2 queries" in ok("bench", "search").stdout
 
 
+def test_bench_search_logs_its_queries(
+    mini_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    queries = tmp_path / "queries.txt"
+    queries.write_text("chain\n编译\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "QUERIES", queries)
+    ok("bench", "search")
+    ok("bench", "search")
+    rows = recent_queries(tmp_path / "idx" / "sift.db", 10)
+    assert sorted(row.query for row in rows) == ["chain"] * 2 + ["编译"] * 2
+
+
+def test_similar_lists_k_posts_best_first(mini_cli) -> None:
+    lines = ok("similar", "0", "-k", "3").stdout.splitlines()
+    assert len(lines) == 3
+    scores = [float(line.split()[0]) for line in lines]
+    assert scores[0] == 1.0
+    assert scores == sorted(scores, reverse=True)
+    assert all(0.0 <= score <= 1.0 for score in scores)
+    assert lines[0].split()[1] == "0"
+
+
+def test_similar_defaults_to_five_posts(mini_cli) -> None:
+    assert len(ok("similar", "0").stdout.splitlines()) == 5
+
+
+def test_similar_unknown_doc_exits_1(mini_cli) -> None:
+    result = invoke("similar", "99")
+    assert result.exit_code == 1
+    assert "no document with id 99" in result.stderr
+
+
+def test_similar_k_below_one_is_a_usage_error(mini_cli) -> None:
+    assert code_of("similar", "0", "-k", "0") == 2
+
+
+def test_similar_without_index_exits_4(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SIFT_INDEX", str(tmp_path / "none"))
+    assert code_of("similar", "0") == 4
+
+
+def test_report_writes_figures_and_table(mini_cli, tmp_path: Path) -> None:
+    out = tmp_path / "rep"
+    lines = ok("report", "--out", str(out)).stdout.splitlines()
+    names = sorted(Path(line).name for line in lines)
+    assert names == [
+        "heaps.png",
+        "latency-hist.png",
+        "posts-per-month.png",
+        "report.md",
+        "zipf.png",
+    ]
+    for name in names:
+        assert (out / name).stat().st_size > 0
+    assert (out / "zipf.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert "| documents | 8 |" in (out / "report.md").read_text("utf-8")
+
+
 def test_bench_index_prints_a_table(mini_cli) -> None:
     out = ok(
         "bench",
@@ -381,11 +442,15 @@ def test_version_and_bench_do_not_import_sqlalchemy() -> None:
     assert done.returncode == 0, done.stderr
 
 
-def test_help_and_bench_start_without_sqlalchemy_and_asyncio() -> None:
+def test_help_and_bench_start_without_heavy_imports() -> None:
     code = (
         "import sys, sift.cli;"
+        "sift.cli.main(['--version']);"
+        "sift.cli.main(['similar', '--help']);"
+        "sift.cli.main(['report', '--help']);"
         "sift.cli.main(['bench', 'index', '--help']);"
-        "heavy = {'sqlalchemy', 'asyncio'} & set(sys.modules);"
+        "heavy = {'sqlalchemy', 'asyncio', 'numpy', 'pandas', 'matplotlib'}"
+        " & set(sys.modules);"
         "assert not heavy, heavy"
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True)
