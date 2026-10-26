@@ -196,9 +196,33 @@ def _unpack(wire: _Wire) -> dict[str, PostingList]:
 def _positions(tokens: Iterable[Token]) -> dict[str, list[int]]:
     """Group the positions of tokens by token text."""
     positions: dict[str, list[int]] = {}
+    get = positions.get
     for token in tokens:
-        positions.setdefault(token.text, []).append(token.position)
+        found = get(token.text)
+        if found is None:
+            positions[token.text] = [token.position]
+        else:
+            found.append(token.position)
     return positions
+
+
+def _append_postings(
+    index: dict[str, PostingList],
+    doc_id: int,
+    positions: Mapping[str, list[int]],
+) -> None:
+    """Append one posting of doc_id to the list of every term.
+
+    A PostingList is created only for a term met for the first time:
+    building one costs a sort and a set, too much to throw away.
+    """
+    get = index.get
+    for term, found in positions.items():
+        posting = Posting(doc_id, tuple(found))
+        plist = get(term)
+        if plist is None:
+            index[term] = plist = PostingList()
+        plist.append(posting)
 
 
 class PostingLookup(Protocol):
@@ -310,12 +334,10 @@ class InvertedIndex(Mapping[str, PostingList]):
         self.documents[doc.doc_id] = doc
         self._doc_lens[doc.doc_id] = length
         self._sorted_terms = None
-        for term, found in positions.items():
-            posting = Posting(doc.doc_id, tuple(found))
-            self._postings.setdefault(term, PostingList()).append(posting)
-        for term, found in _positions(title_tokens).items():
-            posting = Posting(doc.doc_id, tuple(found))
-            self.title_index.setdefault(term, PostingList()).append(posting)
+        _append_postings(self._postings, doc.doc_id, positions)
+        _append_postings(
+            self.title_index, doc.doc_id, _positions(title_tokens)
+        )
 
     def merge(self, other: InvertedIndex) -> None:
         """Add every document of other, whose doc_ids all come later.
