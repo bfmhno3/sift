@@ -33,11 +33,16 @@ class NfkcCasefold(TokenFilterBase, name="nfkc"):
     """NFKC-normalize and casefold the text of every token."""
 
     def __call__(self, tokens: Iterable[Token]) -> Iterator[Token]:
-        """Yield each token with its text folded."""
+        """Yield each token with its text folded.
+
+        For ASCII text NFKC changes nothing and casefold is lower,
+        which skips the Unicode tables.
+        """
         for token in tokens:
-            text = fold(token.text)
-            if text != token.text:
-                token = token._replace(text=text)
+            text = token.text
+            folded = text.lower() if text.isascii() else fold(text)
+            if folded != text:
+                token = token._replace(text=folded)
             yield token
 
 
