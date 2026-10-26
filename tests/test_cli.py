@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import pstats
 import shutil
 import signal
 import socket
@@ -291,6 +292,32 @@ def test_bench_search_runs_every_query(
     queries.write_text("chain\n\n编译\n", encoding="utf-8")
     monkeypatch.setattr(cli, "QUERIES", queries)
     assert "total for 2 queries" in ok("bench", "search").stdout
+
+
+def test_bench_search_profile_writes_pstats(
+    mini_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    queries = tmp_path / "queries.txt"
+    queries.write_text("chain\n", encoding="utf-8")
+    target = tmp_path / "out" / "profile.pstats"
+    monkeypatch.setattr(cli, "QUERIES", queries)
+    monkeypatch.setattr(cli, "PROFILE", target)
+    result = ok("bench", "search", "--profile")
+    assert f"profile written to {target}" in result.stdout
+    profile = pstats.Stats(str(target)).get_stats_profile()
+    assert "search" in profile.func_profiles
+
+
+def test_bench_search_without_profile_writes_nothing(
+    mini_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    queries = tmp_path / "queries.txt"
+    queries.write_text("chain\n", encoding="utf-8")
+    target = tmp_path / "out" / "profile.pstats"
+    monkeypatch.setattr(cli, "QUERIES", queries)
+    monkeypatch.setattr(cli, "PROFILE", target)
+    ok("bench", "search")
+    assert not target.parent.exists()
 
 
 def test_bench_search_logs_its_queries(

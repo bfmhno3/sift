@@ -72,6 +72,7 @@ if TYPE_CHECKING:
 
 CORPUS = Path("corpus/posts")
 QUERIES = Path("bench/queries.txt")
+PROFILE = Path("out/profile.pstats")
 DEBUG_KEY = "sift.debug"
 MODE_NAMES = "process, thread or interp"
 
@@ -822,12 +823,25 @@ def run_bench_index(
 
 
 @bench_app.command("search", help="Run bench/queries.txt.")
-def run_bench_search() -> None:
+def run_bench_search(
+    profile: Annotated[
+        bool,
+        typer.Option(
+            "--profile",
+            help=f"Run the queries under cProfile; write {PROFILE}.",
+        ),
+    ] = False,
+) -> None:
     """Run bench/queries.txt: open the index once, time each query.
 
     Every query is also logged in sift.db, after the timing, so a few
-    runs give the query log something to analyze.
+    runs give the query log something to analyze. With --profile the
+    queries run under cProfile and its stats go to out/profile.pstats
+    (read them with ``python -m pstats``); the profiler slows every
+    query, so the times printed then are not the bench times.
     """
+    import cProfile
+
     from sift.analysis import build_pipeline
     from sift.config import load_config
     from sift.search import Searcher
@@ -846,18 +860,27 @@ def run_bench_search() -> None:
             b=config.b,
             pipeline=build_pipeline(index.pipeline_names),
         )
+        profiler = cProfile.Profile()
+        if profile:
+            profiler.enable()
         for query in filter(None, queries):
             start = time.perf_counter()
             result = searcher.search(query, config.limit)
             elapsed = time.perf_counter() - start
             timings.append((query, result.total, elapsed))
             logged.append((query, result.total, result.took_ms))
+        if profile:
+            profiler.disable()
     for query, hits, took_ms in logged:
         log_or_warn(directory / DB, query, hits, took_ms)
     total = sum(seconds for _, _, seconds in timings)
     for query, hits, seconds in timings:
         print(f"{seconds * 1000:8.2f} ms  {hits:>4} hits  {query}")
     print(f"{total * 1000:8.2f} ms  total for {len(timings)} queries")
+    if profile:
+        PROFILE.parent.mkdir(parents=True, exist_ok=True)
+        profiler.dump_stats(PROFILE)
+        print(f"profile written to {PROFILE}")
 
 
 def data_import_error(command: str, error: ModuleNotFoundError) -> SiftError:
