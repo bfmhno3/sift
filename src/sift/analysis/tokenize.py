@@ -2,7 +2,7 @@
 
 import re
 import unicodedata
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from typing import NamedTuple, cast
 
 CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
@@ -69,6 +69,32 @@ def iter_tokens(text: str) -> Iterator[Token]:
             at = start + i
             yield new(Token, (run[i : i + 2], position, at, at + 2))
             position += 1
+
+
+def iter_hit_spans(
+    text: str, terms: Collection[str]
+) -> Iterator[tuple[int, int]]:
+    """Yield (start, end) of the tokens of text whose text is in terms.
+
+    The same tokens and offsets as the ones of iter_tokens that pass
+    ``token.text in terms``, in the same order, but the other tokens
+    are never built: a snippet keeps a handful out of thousands.
+
+    >>> list(iter_hit_spans("The Fox ran. 搜索引擎", {"fox", "索引"}))
+    [(4, 7), (14, 16)]
+    """
+    folded = fold(text)
+    for match in _TOKEN.finditer(folded):
+        run = match[0]
+        start, end = match.span()
+        if match.lastgroup == "latin" or end - start == 1:
+            if run in terms:
+                yield start, end
+            continue
+        for i in range(end - start - 1):
+            if run[i : i + 2] in terms:
+                at = start + i
+                yield at, at + 2
 
 
 def tokenize(text: str) -> list[str]:

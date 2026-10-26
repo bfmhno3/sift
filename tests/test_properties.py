@@ -6,7 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from sift.analysis import tokenize
-from sift.analysis.tokenize import fold, iter_tokens
+from sift.analysis.tokenize import fold, iter_hit_spans, iter_tokens
 from sift.index import Posting, PostingList
 from sift.query import (
     And,
@@ -55,6 +55,18 @@ def test_offsets_slice_back_to_the_folded_text(text: str) -> None:
 def test_positions_count_tokens_from_zero(text: str) -> None:
     tokens = list(iter_tokens(text))
     assert [t.position for t in tokens] == list(range(len(tokens)))
+
+
+@given(TEXT, st.sets(st.sampled_from(["a", "ab", "搜索", "索引", "全", "x_"])))
+def test_hit_spans_are_the_spans_of_the_tokens_in_terms(
+    text: str, terms: set[str]
+) -> None:
+    expected = [
+        (token.start, token.end)
+        for token in iter_tokens(text)
+        if token.text in terms
+    ]
+    assert list(iter_hit_spans(text, terms)) == expected
 
 
 @given(TEXT)

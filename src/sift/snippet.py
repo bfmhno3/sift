@@ -8,8 +8,7 @@ from html import escape
 from itertools import accumulate
 from string.templatelib import Interpolation, Template, convert
 
-from sift.analysis import iter_tokens
-from sift.analysis.tokenize import fold
+from sift.analysis.tokenize import fold, iter_hit_spans
 
 type Parts = list[tuple[str, bool]]
 
@@ -60,10 +59,7 @@ def _hit_spans(
     fold(text) and are mapped through table when there is one.
     """
     spans: list[tuple[int, int]] = []
-    for token in iter_tokens(text):
-        if token.text not in terms:
-            continue
-        start, end = token.start, token.end
+    for start, end in iter_hit_spans(text, terms):
         if table is not None:
             start = bisect_right(table, start) - 1
             end = bisect_left(table, end)
