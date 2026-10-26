@@ -52,10 +52,12 @@ src/sift/            the package (parallel.py: process, thread and interpreter p
                      gui/tk_app.py: the tkinter window, `sift gui --tk`;
                      gui/qt/: the PySide6 window, `sift gui`: theme.py tokens and QSS,
                      model.py, delegate.py, worker.py, preview.py, window.py, app.py;
-                     ext/: the native tokenizers: ctok.py (ctypes), cffitok.py (cffi), _cytok.pyx (Cython), _capi (C API);
+                     ext/: the native tokenizers: ctok.py (ctypes), cffitok.py (cffi), _cytok.pyx (Cython), _capi (C API),
+                     rs.py (the wrapper of the Rust module sift._rs, with its stub _rs.pyi);
                      analytics/: TF-IDF vectors and `sift similar` (vectors.py), pandas frames and
                      Zipf/Heaps fits (stats.py), matplotlib figures (plots.py), `sift report` (report.py))
 c/                   sift_tok.c (the tokenizer in C), sift_capi.c (a C API module), Makefile for the native artifacts
+rust/sift-rs/        the tokenizer in Rust with PyO3 (src/lib.rs), built by maturin into src/sift/_rs*.so
 tests/               pytest suite and the tiny fixture corpus in tests/fixtures/mini
 .github/workflows/   CI: `nix develop --command make corpus ci`
 lab/chNN/            one directory of small lab files per chapter
@@ -84,12 +86,13 @@ make corpus    # fetch the 123 posts into corpus/ (pinned commit)
 make ch01      # one chapter
 make typecheck # mypy --strict and pyright strict on src/
 make ext       # build c/build/libsifttok.so and the _capi and _cytok modules in src/sift/ext/
+make ext-rs    # maturin develop --release: the Rust module src/sift/_rs*.so
 make test      # the pytest suite (python3 -m pytest) (make cov adds coverage)
-make ci        # lint, typecheck, ext, tests and every chapter
+make ci        # lint (ruff, cargo fmt and clippy), typecheck, ext, ext-rs, tests and every chapter
 sift index     # writes .sift/ (segment.sft, sift.db, manifest.json)
 sift search --limit 3 rust
 sift index --full --jobs 4 --mode thread   # modes: process, thread, interp
-sift index --full --tokenizer cython       # python, c (ctypes), cffi or cython; needs make ext
+sift index --full --tokenizer rust         # python, c (ctypes), cffi, cython or rust; needs make ext / make ext-rs
 sift bench index --repeat 8 --jobs 1,2,4,8 --mode process,thread,interp
 PYTHONPATH=src:<pure-Python site-packages> python3.14t -m sift bench index --mode thread
                                # free-threaded: typer and rich are not installed for it,
@@ -156,6 +159,16 @@ of `--tokenizer python`, only the pipeline name in `sift.db` differs, so changin
 `tests/test_ext.py` compares the token streams with the Python tokenizer on the fixtures, on the corpus (when present)
 and on random text, and skips when `make ext` has not run. `make ch24` also runs the C code under AddressSanitizer
 and UBSan, counts the yellow lines of the `cython -a` report and compares the segment files with `cmp`.
+
+`make ext-rs` builds `rust/sift-rs` (PyO3 0.30, edition 2024) with `maturin develop --release` into the virtual
+environment; the module lands in `src/sift/_rs*.so` and `src/sift/_rs.pyi` types it. `src/sift/ext/rs.py` wraps it:
+`tokens(folded)` and `tokens_many(texts, threads=0)`, which releases the GIL (`Python::detach`) and tokenizes on
+`std::thread::scope` threads. Like the C twins, the Rust code takes text that Python has already NFKC-normalized and
+casefolded: no Rust crate implements `str.casefold` for the Unicode version of the interpreter. `sift index --tokenizer
+rust` writes the same `segment.sft` as `python`. `make lint` runs `cargo fmt --check` and `cargo clippy -- -D warnings`,
+`make test` also runs `cargo test`, and `make clean` removes the module and `rust/sift-rs/target`. `make ch25` shows
+Rust errors and panics from Python, how far the GIL release scales, the type stubs under mypy, pyright and stubtest, and
+a benchmark of every tokenizer of the series against the one of tag `ch22`.
 
 ## Corpus license
 
