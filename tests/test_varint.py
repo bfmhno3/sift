@@ -6,7 +6,13 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from sift.storage.varint import decode, decode_deltas, encode, encode_deltas
+from sift.storage.varint import (
+    append_deltas,
+    decode,
+    decode_deltas,
+    encode,
+    encode_deltas,
+)
 
 
 @pytest.mark.parametrize(
@@ -49,6 +55,21 @@ def test_delta_roundtrip(numbers: list[int]) -> None:
     numbers.sort()
     data = encode_deltas(numbers)
     assert decode_deltas(data, 0, len(numbers)) == (numbers, len(data))
+
+
+@given(
+    st.lists(st.integers(min_value=0, max_value=10**9)),
+    st.binary(max_size=8),
+)
+def test_append_deltas_matches_encode_deltas(
+    numbers: list[int], prefix: bytes
+) -> None:
+    numbers.sort()
+    out = bytearray(prefix)
+    append_deltas(out, numbers)
+    assert bytes(out) == prefix + b"".join(
+        encode(b - a) for a, b in zip([0, *numbers], numbers, strict=False)
+    )
 
 
 def test_deltas_are_smaller_for_close_numbers() -> None:

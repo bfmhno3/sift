@@ -55,6 +55,25 @@ def decode(
             raise ValueError(f"varint too long at offset {offset}")
 
 
+def append_deltas(out: bytearray, seq: Iterable[int]) -> None:
+    """Append the delta-coded varints of seq to out.
+
+    Same bytes as ``out += encode_deltas(seq)``, without the
+    intermediate bytes object. A delta below 0x80 is one byte and
+    skips the call to encode.
+    """
+    previous = 0
+    for n in seq:
+        delta = n - previous
+        if delta < 0:
+            raise ValueError(f"sequence decreases: {previous} then {n}")
+        if delta < 0x80:
+            out.append(delta)
+        else:
+            out += encode(delta)
+        previous = n
+
+
 def encode_deltas(seq: Iterable[int]) -> bytes:
     """Return the varints of seq as differences between neighbours.
 
@@ -62,12 +81,7 @@ def encode_deltas(seq: Iterable[int]) -> bytes:
     neighbours give a delta of 0.
     """
     out = bytearray()
-    previous = 0
-    for n in seq:
-        if n < previous:
-            raise ValueError(f"sequence decreases: {previous} then {n}")
-        out += encode(n - previous)
-        previous = n
+    append_deltas(out, seq)
     return bytes(out)
 
 

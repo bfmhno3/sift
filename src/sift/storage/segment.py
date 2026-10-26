@@ -34,7 +34,7 @@ from typing import Self
 from sift.errors import IndexCorruptError, IndexMissingError
 from sift.index import Posting, PostingList
 from sift.storage.atomic import atomic_write
-from sift.storage.varint import decode, decode_deltas, encode, encode_deltas
+from sift.storage.varint import append_deltas, decode, decode_deltas, encode
 
 MAGIC = b"SIFT"
 VERSION = 1
@@ -113,10 +113,20 @@ def _encode_postings(plist: PostingList) -> bytes:
     out = bytearray()
     previous = 0
     for posting in plist:
-        out += encode(posting.doc_id - previous)
-        out += encode(posting.tf)
-        out += encode_deltas(posting.positions)
-        previous = posting.doc_id
+        doc_id = posting.doc_id
+        positions = posting.positions
+        gap = doc_id - previous
+        if 0 <= gap < 0x80:
+            out.append(gap)
+        else:
+            out += encode(gap)
+        tf = len(positions)
+        if tf < 0x80:
+            out.append(tf)
+        else:
+            out += encode(tf)
+        append_deltas(out, positions)
+        previous = doc_id
     return bytes(out)
 
 
