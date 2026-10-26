@@ -1,10 +1,14 @@
-"""The three tokenizers: Latin only, CJK bigrams only, and both."""
+"""The tokenizers: Latin only, CJK bigrams only, and both.
+
+MixedTokenizer has three twins whose scanning loop is native code
+(sift.ext): the same tokens, from C by ctypes or cffi and from Cython.
+"""
 
 import re
 from collections.abc import Iterator
 
 from sift.analysis.base import Analyzer
-from sift.analysis.tokenize import CJK, Token, iter_tokens
+from sift.analysis.tokenize import CJK, Token, fold, iter_tokens
 
 _LATIN = re.compile(r"[0-9a-z_]+(?:\+{1,2}|\#)?", re.IGNORECASE)
 _CJK_RUN = re.compile(f"[{CJK}]+")
@@ -55,3 +59,36 @@ class MixedTokenizer(Analyzer, name="mixed"):
     def analyze(self, text: str) -> Iterator[Token]:
         """Yield the tokens of iter_tokens(text)."""
         return iter_tokens(text)
+
+
+class CMixedTokenizer(Analyzer, name="mixed-c"):
+    """MixedTokenizer with the scan done in C, called by ctypes.
+
+    Needs ``make ext``. Python still does NFKC and casefold.
+    """
+
+    def analyze(self, text: str) -> Iterator[Token]:
+        """Yield the tokens of iter_tokens(text)."""
+        from sift.ext import ctok
+
+        return iter(ctok.tokens(fold(text)))
+
+
+class CffiMixedTokenizer(Analyzer, name="mixed-cffi"):
+    """MixedTokenizer with the scan done in C, called by cffi."""
+
+    def analyze(self, text: str) -> Iterator[Token]:
+        """Yield the tokens of iter_tokens(text)."""
+        from sift.ext import cffitok
+
+        return iter(cffitok.tokens(fold(text)))
+
+
+class CythonMixedTokenizer(Analyzer, name="mixed-cython"):
+    """MixedTokenizer with the scan done by a Cython module."""
+
+    def analyze(self, text: str) -> Iterator[Token]:
+        """Yield the tokens of iter_tokens(text)."""
+        from sift.ext import _cytok
+
+        return iter(_cytok.tokens(fold(text)))

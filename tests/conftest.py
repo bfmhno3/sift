@@ -1,7 +1,10 @@
 """Shared fixtures: the mini corpus, parsed and indexed once."""
 
+import importlib
 import os
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 # The Qt tests (and the doctests of sift.gui.qt) must never open a
 # window: set the platform before anything imports PySide6. It is set,
@@ -49,6 +52,28 @@ def mini_index(mini_docs: list[Document]) -> InvertedIndex:
 def searcher(mini_index: InvertedIndex) -> Searcher:
     """Return a Searcher over the fixture posts, new for every test."""
     return Searcher(mini_index)
+
+
+@pytest.fixture(scope="session")
+def native() -> Callable[[str], ModuleType]:
+    """Return a loader for the modules of sift.ext.
+
+    The loader skips the test when the module is not built, that is
+    when `make ext` has not run. Any other import error is a failure.
+    """
+
+    def load(name: str) -> ModuleType:
+        try:
+            return importlib.import_module(name)
+        except ModuleNotFoundError as error:
+            if error.name != name:
+                raise
+        except OSError as error:
+            if "No such file" not in str(error):
+                raise
+        pytest.skip(f"{name} is not built: run `make ext`")
+
+    return load
 
 
 # The window tests need a display: test_tk_window.py runs them under

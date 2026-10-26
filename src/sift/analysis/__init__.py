@@ -10,7 +10,10 @@ from sift.analysis.filters import (
 from sift.analysis.pipeline import Pipeline, build_pipeline
 from sift.analysis.tokenize import Token, iter_tokens, tokenize
 from sift.analysis.tokenizers import (
+    CffiMixedTokenizer,
     CjkBigramTokenizer,
+    CMixedTokenizer,
+    CythonMixedTokenizer,
     LatinTokenizer,
     MixedTokenizer,
 )
@@ -20,7 +23,10 @@ __all__ = [
     "REGISTRY",
     "STOPWORDS",
     "Analyzer",
+    "CMixedTokenizer",
+    "CffiMixedTokenizer",
     "CjkBigramTokenizer",
+    "CythonMixedTokenizer",
     "LatinTokenizer",
     "MixedTokenizer",
     "NfkcCasefold",
