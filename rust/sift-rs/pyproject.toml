@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.9.4,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sift-rs"
+version = "0.1.0"
+description = "The tokenizer of Sift in Rust, as the module sift._rs."
+requires-python = ">=3.14"
+license = "MIT OR Apache-2.0"
+
+# The module lands inside the sift package, next to sift/ext, so that
+# `maturin develop` and a plain editable install of sift agree.
+[tool.maturin]
+module-name = "sift._rs"
+python-source = "../../src"
